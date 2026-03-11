@@ -6,12 +6,11 @@ import sys
 import subprocess
 
 # =====================================================================
-# 🚀 0. CONDA ENVIRONMENT BOOTSTRAP (무한 루프 방지 장치 탑재)
+# 🚀 0. CONDA ENVIRONMENT BOOTSTRAP 
 # =====================================================================
 TARGET_ENV = "strucptm"
 current_env = os.environ.get("CONDA_DEFAULT_ENV")
 
-# 💡 STRUCPTM_BOOTSTRAPPED 플래그를 추가해 완벽하게 인셉션(무한루프)을 차단합니다.
 if current_env != TARGET_ENV and os.environ.get("STRUCPTM_BOOTSTRAPPED") != "1":
     print(f"🔄 [BOOTSTRAP] 현재 환경은 '{current_env}'입니다. 안전한 '{TARGET_ENV}' 환경으로 전환을 시도합니다...")
     try:
@@ -28,14 +27,11 @@ if current_env != TARGET_ENV and os.environ.get("STRUCPTM_BOOTSTRAPPED") != "1":
             print(f"✅ [BOOTSTRAP] '{TARGET_ENV}' 환경 쾌속 생성 및 패키지 세팅 완료!")
         
         env_python = os.path.join(conda_base, "envs", TARGET_ENV, "bin", "python")
-        
         print(f"🚀 [BOOTSTRAP] 안전한 환경에서 스크립트를 재시작합니다!\n" + "="*60)
         
-        # 💡 [핵심 해결책] 자식 프로세스에게 새 이름표를 쥐여주고 보냅니다.
         run_env = os.environ.copy()
         run_env["CONDA_DEFAULT_ENV"] = TARGET_ENV
         run_env["STRUCPTM_BOOTSTRAPPED"] = "1"
-        
         sys.exit(subprocess.call([env_python] + sys.argv, env=run_env))
         
     except Exception as e:
@@ -43,7 +39,7 @@ if current_env != TARGET_ENV and os.environ.get("STRUCPTM_BOOTSTRAPPED") != "1":
         sys.exit(1)
 
 # =====================================================================
-# ⬇️ 위 부트스트랩을 통과했다면, 이제 100% 'strucptm' 환경 내부입니다!
+# ⬇️ 본 스크립트 시작
 # =====================================================================
 import re
 import math
@@ -79,7 +75,7 @@ from Bio import pairwise2
 warnings.filterwarnings("ignore")
 
 # =====================================================================
-# ⚙️ 1. GLOBAL CONFIGURATION
+# ⚙️ 1. GLOBAL CONFIGURATION & DICTIONARIES
 # =====================================================================
 class CONFIG:
     DATA_ROOT = "/data1/JSG"
@@ -111,9 +107,6 @@ class CONFIG:
     SCORING_PRESET = dict(match=1.0, mismatch=-1.0, gap_open=-5.0, gap_extend=-1.0)
     ALIGN_CHUNKSIZE = 1
 
-# =====================================================================
-# 📚 2. DICTIONARIES 
-# =====================================================================
 THREE_TO_ONE = {"ALA":"A", "CYS":"C", "ASP":"D", "GLU":"E", "PHE":"F", "GLY":"G", "HIS":"H", "ILE":"I", "LYS":"K", "LEU":"L", "MET":"M", "ASN":"N", "PRO":"P", "GLN":"Q", "ARG":"R", "SER":"S", "THR":"T", "VAL":"V", "TRP":"W", "TYR":"Y", "SEC":"U", "PYL":"O", "ASX":"B", "GLX":"Z", "UNK":"X", "MSE":"M"}
 PTM_TO_BASE_1 = {"MLY":"K", "SMC":"C", "M3L":"K", "MLZ":"K", "MEN":"N", "HIC":"H", "MHS":"H", "AGM":"R", "MGN":"Q", "MEA":"E", "CMT":"C", "SEP":"S", "TPO":"T", "PTR":"Y", "HYP":"P", "LYZ":"K", "CSO":"C", "OMT":"M", "KCX":"K", "PCA":"Q", "CGU":"E", "ALY":"K", "SAC":"S", "AYA":"A", "FME":"M", "TYS":"Y", "NIY":"Y", "SNC":"C"}
 RES3_TO_ONE = {**THREE_TO_ONE, **PTM_TO_BASE_1}
@@ -178,7 +171,8 @@ def download_new_mmcifs() -> List[str]:
     with ThreadPoolExecutor(max_workers=CONFIG.MAX_DOWNLOAD_WORKERS) as ex:
         futs = [ex.submit(dl_file, u) for u in missing_urls]
         for fut in tqdm(as_completed(futs), total=len(futs), desc="Downloading"):
-            if fut.result(): new_cifs.append(fut.result())
+            res = fut.result()
+            if res: new_cifs.append(res)
             
     print_log(f"✅ Downloaded {len(new_cifs)} new mmCIFs.")
     return new_cifs
@@ -338,17 +332,23 @@ def process_assembly_and_interface_global(task):
         coords, resnums = [], []
         for res in chain:
             c = get_cb_or_ca_coord(res)
-            if c is not None: coords.append(c); resnums.append(res.id)
+            if c is not None: 
+                coords.append(c)
+                resnums.append(res.id)
         if coords: chain_data[ch_id] = (np.asarray(resnums, dtype=int), np.asarray(coords, dtype=float))
 
     asm = "Multimer" if len(chain_data) >= 2 else ("Monomer" if len(chain_data) == 1 else "Unknown")
     loc = {}
     for (ch, rn) in ptm_dict.keys():
         chU, rnI = str(ch).upper(), int(rn)
-        if chU not in chain_data: loc[(chU, rnI)] = "Unknown"; continue
+        if chU not in chain_data: 
+            loc[(chU, rnI)] = "Unknown"
+            continue
         resnums, coords = chain_data[chU]
         hits = np.where(resnums == rnI)
-        if len(hits) == 0: loc[(chU, rnI)] = "Unknown"; continue
+        if len(hits) == 0: 
+            loc[(chU, rnI)] = "Unknown"
+            continue
         ptm_coord = coords[int(hits)]
         is_interface = any(np.any(np.linalg.norm(ocoords - ptm_coord, axis=1) < cutoff) for och, (_, ocoords) in chain_data.items() if och != chU)
         loc[(chU, rnI)] = "Interface" if is_interface else "Non-interface"
@@ -358,10 +358,15 @@ def parse_dssp_to_df(dssp_path):
     rows, parse = [], False
     with open(dssp_path) as f:
         for l in f:
-            if l.startswith("  #  RESIDUE"): parse = True; continue
-            if not parse or len(l) < 40: continue
-            try: resnum = int(l[5:10].strip())
-            except: continue
+            if l.startswith("  #  RESIDUE"): 
+                parse = True
+                continue
+            if not parse or len(l) < 40: 
+                continue
+            try: 
+                resnum = int(l[5:10].strip())
+            except: 
+                continue
             asa = l[34:38].strip()
             rows.append({"chain": l.strip().upper(), "resnum": resnum, "sec_struct": l.strip(), "ASA_dssp": int(asa) if asa.isdigit() else np.nan})
     return pd.DataFrame(rows)
@@ -396,9 +401,12 @@ def run_feature_extraction(target_cifs: List[str]):
             all_seq.extend(sq); all_resatoms.extend(ra); all_glyco.extend(gl)
 
     new_seq_df = pd.DataFrame(all_seq)
-    if not new_seq_df.empty: new_seq_df = new_seq_df.rename(columns={"pdb_id": "PDB_ID", "pdb_chain": "chain_ID", "sequence_1": "1_letter_expressed_sequence"})
+    if not new_seq_df.empty: 
+        new_seq_df = new_seq_df.rename(columns={"pdb_id": "PDB_ID", "pdb_chain": "chain_ID", "sequence_1": "1_letter_expressed_sequence"})
+    
     final_seq_df = pd.concat([new_seq_df, inter_seq], ignore_index=True)
-    if not final_seq_df.empty: final_seq_df = final_seq_df.assign(_len=final_seq_df["1_letter_expressed_sequence"].str.len()).sort_values("_len", ascending=False).drop_duplicates(["PDB_ID", "chain_ID"]).drop(columns="_len")
+    if not final_seq_df.empty: 
+        final_seq_df = final_seq_df.assign(_len=final_seq_df["1_letter_expressed_sequence"].str.len()).sort_values("_len", ascending=False).drop_duplicates(["PDB_ID", "chain_ID"]).drop(columns="_len")
     final_seq_df.to_csv(CONFIG.INTER_SEQ, index=False)
     final_seq_df.to_csv(CONFIG.FINAL_SEQ, index=False)
 
@@ -450,7 +458,9 @@ def run_feature_extraction(target_cifs: List[str]):
     with ThreadPoolExecutor(max_workers=CONFIG.WORKERS) as exe:
         for pdb_id, asm, locs in tqdm(exe.map(process_assembly_and_interface_global, [(p, d, CONFIG.MMCIF_ROOT, 8.0) for p, d in ptm_map.items()]), total=len(ptm_map), desc="Assembly/Interface"):
             for (ch, rn), idxs in ptm_map.get(pdb_id, {}).items():
-                for idx in idxs: out.at[idx, "Assembly_type"] = asm; out.at[idx, "Location"] = locs.get((ch, rn), "Unknown")
+                for idx in idxs: 
+                    out.at[idx, "Assembly_type"] = asm
+                    out.at[idx, "Location"] = locs.get((ch, rn), "Unknown")
 
     out["Secondary_structure"], out["RSA"], out["_base_aa1"], out["orig_idx"] = np.nan, np.nan, out["base_residue_name"].map(FULLNAME_TO_1), out.index
     with ThreadPoolExecutor(max_workers=CONFIG.WORKERS) as exe:
@@ -506,7 +516,11 @@ def run_sequence_alignments(struc_df, seq_df):
     tasks = []
     for key in tqdm(df["__key__"].dropna().unique().tolist(), desc="Building align tasks"):
         if not (qseq := seq_map.get(key)): continue
-        group_str = df.loc[df["__key__"]==key, "PDB_IDs_from_identical_UniProt_Accession_code"].iloc
+        
+        group_series = df.loc[df["__key__"]==key, "PDB_IDs_from_identical_UniProt_Accession_code"]
+        if group_series.empty: continue
+        group_str = group_series.iloc
+        
         if pd.isna(group_str) or not str(group_str).strip(): continue
         cands = sorted(list(set([c.strip() for c in str(group_str).split(",") if c.strip() != key and seq_map.get(c.strip())])))
         meta_sig = hashlib.md5(f"{hashlib.md5(qseq.encode('utf-8')).hexdigest()}|{hashlib.md5(','.join(cands).encode('utf-8')).hexdigest()}".encode('utf-8')).hexdigest()
