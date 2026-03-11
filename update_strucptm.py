@@ -186,7 +186,10 @@ class ChainSelect(Select):
 
 def split_one_cif(fn):
     path = os.path.join(CONFIG.MMCIF_ROOT, fn)
-    pid = fn.split('.')
+    # 💡 [핵심 수정 1] 명확하게 할당
+    filename_parts = fn.split('.')
+    pid = filename_parts[0]
+    
     try:
         parser = FastMMCIFParser(QUIET=True) if 'FastMMCIFParser' in globals() else MMCIFParser(QUIET=True)
         st = parser.get_structure(pid, path)
@@ -202,7 +205,10 @@ def split_one_cif(fn):
     except Exception: pass
 
 def run_dssp_full(fn):
-    pid = fn.split('.')
+    # 💡 [핵심 수정 2] 명확하게 할당
+    filename_parts = fn.split('.')
+    pid = filename_parts[0]
+    
     cif_path = os.path.join(CONFIG.MMCIF_ROOT, fn)
     dssp_path = os.path.join(CONFIG.DSSP_ROOT, f"{pid}.dssp")
     if not os.path.exists(dssp_path):
@@ -235,8 +241,9 @@ def extract_one_mmcif(mmcif_file: str) -> Tuple[List[dict], List[dict], List[dic
     seq_rows, atom_rows, gly_rows = [], [], []
     pdb_path = os.path.join(CONFIG.MMCIF_ROOT, mmcif_file)
     
-    # 💡 바로 여기서 에러가 났었습니다!을 명확히 넣어 완벽 해결!
-    pdb_id = mmcif_file.split('.').upper()
+    # 💡 [핵심 수정 3] 명확하게 할당 후 upper() 적용
+    filename_parts = mmcif_file.split('.')
+    pdb_id = filename_parts[0].upper()
 
     try:
         cif_dict = MMCIF2Dict(pdb_path)
@@ -442,8 +449,11 @@ def run_feature_extraction(target_cifs: List[str]):
     
     out["pdb_pos"] = pd.to_numeric(out["pdb_pos"], errors="coerce").astype("Int64")
     out = out.dropna(subset=["pdb_pos"]).drop_duplicates()
+    
+    # 💡 [핵심 버그 수정 4] split 한 리스트에서 첫 번째 인자과 두 번째 인자을 명확히 할당!
     parts = out["pdb_id_chain"].astype(str).str.split(":", n=1, expand=True)
-    out["pdb_id"], out["pdb_chain"] = parts, parts
+    out["pdb_id"] = parts
+    out["pdb_chain"] = parts
 
     map_df = pd.read_csv(CONFIG.SIFTS_CSV, comment="#")[["PDB", "CHAIN", "SP_PRIMARY"]].dropna()
     map_df["pdb_id_chain"] = map_df["PDB"].str.upper() + ":" + map_df["CHAIN"].str.upper()
@@ -490,7 +500,7 @@ def align_identity(seq1, seq2):
     try:
         aln = pairwise2.align.globalms(seq1, seq2, 1.0, -1.0, -5.0, -1.0, one_alignment_only=True)
         if not aln: return 0.0
-        a, b = aln, aln
+        a, b = aln.seqA, aln.seqB
         return sum(1 for i in range(len(a)) if a[i] == b[i] and a[i] != '-') / len(a)
     except: return 0.0
 
