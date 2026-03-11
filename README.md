@@ -6,9 +6,9 @@
 🌐 **Web Server:** [https://prix.hanyang.ac.kr/strucptm](https://prix.hanyang.ac.kr/strucptm)
 
 ## 📌 Key Features
-* **Structure-based PTM Validation:** Extracts PTMs directly from PDB structures via atom-level composition rules, overcoming the limitations of incomplete or missing annotations (handling over 165,000 validated sites, including ligand-linked glycosylation).
+* **Structure-based PTM Validation:** Extracts PTMs directly from PDB structures via atom-level composition rules.
 * **Structural Context Annotation:** Provides key structural descriptors for each modified residue, including secondary structure (DSSP), relative solvent accessibility (RSA), and inter-chain interface proximity.
-* **Homolog-aware Conformational Comparison:** Groups structural homologs sharing the same UniProt ID (Sequence Identity ≥ 0.8) to distinguish PTM-induced conformational deviations from evolutionary divergence using TM-align.
+* **Homolog-aware Conformational Comparison:** Groups structural homologs sharing the same UniProt ID (Sequence Identity ≥ 0.8) to investigate PTM-induced conformational deviations.
 * **Interactive 3D Visualization:** Seamlessly compare modified and unmodified structures with synchronized camera controls powered by 3Dmol.js.
 
 ## 🛠️ Technology Stack
