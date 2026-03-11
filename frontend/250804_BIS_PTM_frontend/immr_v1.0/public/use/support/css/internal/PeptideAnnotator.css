@@ -1,0 +1,441 @@
+/* navbar */
+.navbar {
+  margin-bottom: 2px;
+}
+
+.progress,
+.progress-striped .active .progress,
+.progress-bar .progress-bar-success {
+  height: 20px;
+  max-height: 20px !important;
+  margin-bottom: 2px;
+  margin-top: 2px;
+}
+.panel-group {
+  margin-bottom: 0px;
+}
+.panel-body {
+  padding: 1px;
+  padding-top: 0px !important;
+  padding-bottom: 10px;
+}
+
+.app-modal-window .modal-dialog {
+  width: 75%;
+}
+
+img {
+  max-height: 50px;
+  padding-top: 5px;
+  padding-bottom: 5px;
+  padding-right: 40px;
+}
+
+.info_figure img {
+  max-height: 100px;
+  max-width: 90%;
+  max-height: 90%;
+}
+
+.navbar-default {
+  background-color: #231d49;
+  border-color: #534e72;
+}
+
+.navbar-default .navbar-brand {
+  color: #ffffff;
+}
+
+.navbar-default .navbar-brand:hover,
+.navbar-default .navbar-brand:focus {
+  color: #ffffff;
+  background-color: #534e72;
+}
+
+.navbar-default .navbar-text {
+  color: #ffffff;
+}
+
+.navbar-default .navbar-nav > li > a {
+  color: #ffffff;
+}
+
+.navbar-default .navbar-nav > li > a:hover,
+.navbar-default .navbar-nav > li > a:focus {
+  color: #ffffff;
+  background-color: #534e72;
+}
+
+.navbar-default .navbar-nav > .active > a,
+.navbar-default .navbar-nav > .active > a:hover,
+.navbar-default .navbar-nav > .active > a:focus {
+  color: #ffffff;
+  background-color: #534e72;
+}
+.na .navbar-default .navbar-nav > .open > a,
+.navbar-default .navbar-nav > .open > a:hover,
+.navbar-default .navbar-nav > .open > a:focus {
+  color: #ffffff;
+  background-color: #534e72;
+}
+
+.navbar-default .navbar-toggle {
+  border-color: #534e72;
+}
+
+.navbar-default .navbar-toggle:hover,
+.navbar-default .navbar-toggle:focus {
+  background-color: #534e72;
+}
+
+.navbar-default .navbar-toggle .icon-bar {
+  background-color: #ffffff;
+}
+
+.navbar-default .navbar-collapse,
+.navbar-default .navbar-form {
+  border-color: #ffffff;
+}
+
+.navbar-default .navbar-link {
+  color: #ffffff;
+}
+
+.navbar-default .navbar-link:hover {
+  color: #ffffff;
+}
+
+.navbar-brand {
+  font-size: 40px;
+}
+
+.navbar-nav {
+  font-size: 16px;
+}
+
+.navbar .divider-vertical {
+  height: 30px;
+  margin-top: 10px;
+  border-right: 1px solid #ffffff;
+}
+
+/* panel css */
+.panel > .panel-heading {
+  background-image: none;
+  color: #ffffff;
+  background-color: #231d49;
+  border-color: #000000;
+}
+
+.select2-results li > div:hover {
+  color: #ffffff;
+  background: #000000;
+}
+
+.panel {
+  border-color: #000000;
+}
+.panel-title {
+  font-size: 22px;
+}
+
+.panel > .panel-body {
+  background-image: none;
+  background-color: #e2e2e3;
+  border-color: #000000;
+}
+
+.panel-body {
+  background-image: none;
+  background-color: #e2e2e3;
+  border-color: #000000;
+}
+
+/* handsontable css */
+.handsontable table thead th {
+  background-color: #231d49;
+  color: white;
+}
+
+/* Button */
+/* fragment */
+.btn-fragment {
+  background-color: rgba(51, 122, 183, 0.95);
+  color: #ffffff;
+  border-color: #555555;
+  transition: all 0.5s;
+}
+
+.btn-fragment:hover,
+.btn-fragment:focus {
+  color: #000000;
+  background-color: rgba(51, 122, 183, 0.4);
+  border-color: #555555;
+}
+
+.btn-fragment:active,
+.btn-fragment.active,
+.open .dropdown-toggle.btn-fragment {
+  color: #000000;
+  background-color: rgba(51, 122, 183, 0.4);
+  border-color: #555555;
+}
+
+/* Class Font Options */
+.tick text {
+  font-family: Montserrat, sans-serif;
+  font-weight: 100;
+}
+
+label {
+  font-family:
+    Open Sans,
+    sans-serif;
+  font-size: 16px;
+}
+.InSilicoSource .active {
+  background: #176117;
+}
+
+.filelabel {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+h3 {
+  font-family: Montserrat, sans-serif;
+  font-size: 16px;
+}
+
+body {
+  font-family:
+    Open Sans,
+    sans-serif;
+  overflow: hidden;
+}
+
+.barlabel {
+  font-family:
+    Open Sans,
+    sans-serif;
+  text-anchor: middle;
+  font-size: 12px;
+}
+
+.aminoacid {
+  font-family: "Inconsolata", monospace;
+  text-anchor: middle;
+  alignment-baseline: central;
+  dominant-baseline: central;
+}
+
+.precursorstatscategory,
+.origincategory,
+.origincategoryBottom {
+  font-family: Montserrat, sans-serif;
+  font-weight: 500;
+  font-size: 12px;
+}
+
+.precursorstatsdata,
+.origindata.origin,
+.origindataBottom.origin {
+  font-family: Montserrat, sans-serif;
+  font-weight: 400;
+  font-size: 9px;
+}
+.precursorstatscategoryBottom {
+  font-family: Montserrat, sans-serif;
+  font-weight: 500;
+  font-size: 12px;
+}
+
+.precursorstatsdataBottom {
+  font-family: Montserrat, sans-serif;
+  font-weight: 400;
+  font-size: 9px;
+}
+
+.zeroline {
+  stroke-dasharray: 10, 5;
+  stroke: #a6a6a6;
+  fill: #a9a9a9;
+}
+
+/* D3 CSS */
+.chart .domain {
+  fill: none;
+  stroke: #000;
+  shape-rendering: crispEdges;
+}
+
+.xAnnotationLabel,
+.yAnnotationLabel,
+.yQTLLabel,
+.yGeneLabel,
+.xLodLabel,
+.yLodLabel,
+.yAlleleLabel {
+  font-family: Montserrat, sans-serif;
+  font-weight: 700;
+  font-size: 10px;
+  text-anchor: middle;
+}
+
+.xAnnotation,
+.yAnnotation {
+  font-family: Montserrat, sans-serif;
+  font-size: 10px;
+}
+
+.yAnnotation {
+  cursor: row-resize;
+}
+.xAnnotation {
+  cursor: col-resize;
+}
+
+.xAnnotationLabel {
+  font-style: italic;
+}
+
+.axis path,
+.axis line {
+  fill: none;
+  stroke: #000;
+  shape-rendering: crispEdges;
+}
+
+.tick line {
+  stroke: black;
+}
+
+.line {
+  fill: none;
+  stroke-width: 2;
+}
+
+/* probably won't work tooltip */
+.d3-tip {
+  line-height: 1;
+  font-weight: bold;
+  padding: 12px;
+  background: rgba(0, 0, 0, 0.8);
+  color: #fff;
+  border-radius: 2px;
+}
+
+/* Creates a small triangle extender for the tooltip */
+.d3-tip:after {
+  box-sizing: border-box;
+  display: inline;
+  font-size: 10px;
+  width: 100%;
+  line-height: 1;
+  color: rgba(0, 0, 0, 0.8);
+  content: "\25BC";
+  position: absolute;
+  text-align: center;
+}
+
+/* Style northward tooltips differently */
+.d3-tip.n:after {
+  margin: -1px 0 0 0;
+  top: 100%;
+  left: 0;
+}
+
+.ui-select-bootstrap .ui-select-choices-row > span {
+  white-space: normal !important;
+}
+
+.ui-select-placeholder {
+  display: inline-block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  width: 95%;
+}
+
+.ui-select-match-text > span {
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding-right: 40px;
+}
+
+.ui-select-toggle {
+  height: auto;
+}
+
+.ui-select-choices-row:hover {
+  background-color: #3875d7;
+  color: #fff;
+}
+
+div.valid-data i {
+  vertical-align: middle;
+}
+
+/* unvisited link */
+a:link {
+  color: #1c9cbc;
+}
+
+/* visited link */
+a:visited {
+  color: white;
+}
+
+/* mouse over link */
+a:hover {
+  color: white;
+}
+
+.help a:hover {
+  color: black;
+}
+.help a {
+  color: black;
+  text-decoration: underline;
+}
+
+.intro a {
+  text-decoration: underline;
+  color: black;
+}
+
+.pull-right {
+  float: right !important;
+  margin-top: 5px;
+}
+
+.table {
+  margin-bottom: 0px;
+  margin-top: 0px;
+}
+div.tooltip {
+  position: absolute;
+  text-align: center;
+  width: 80px;
+  height: 56px;
+  padding: 2px;
+  font: 12px sans-serif;
+  background: lightsteelblue;
+  border: 0px;
+  border-radius: 8px;
+  pointer-events: none;
+}
+
+.nav > li > a {
+  color: black;
+}
+
+.display-none {
+  display: none;
+}
+
+.spectrum-container {
+  padding-left: 40px;
+  padding-right: 40px;
+}

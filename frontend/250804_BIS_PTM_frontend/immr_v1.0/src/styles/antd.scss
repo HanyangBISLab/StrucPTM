@@ -1,0 +1,50 @@
+.ant-form.ant-form-middle {
+  &.search-filters {
+    .ant-form-item {
+      @apply mb-4;
+
+      .ant-form-item-label > label {
+        @apply min-h-[32px] h-auto max-w-[60px];
+      }
+
+      &.regular {
+        .ant-form-item-label {
+          flex: 0 0 115px;
+        }
+      }
+      &.regular2 {
+        .ant-form-item-label {
+          flex: 0 0 115px;
+        }
+      }     
+    }
+
+    .ant-select-outlined.ant-select-multiple .ant-select-selection-item {
+      @apply bg-selected;
+    }
+  }
+}
+
+.ant-menu-light.ant-menu-horizontal > .ant-menu-item-selected {
+  @apply font-semibold;
+}
+
+.ant-menu-light.ant-menu-horizontal > .ant-menu-item-selected::after {
+  border-bottom-width: 3px !important;
+}
+
+.ant-table-expanded-row.ant-table-expanded-row-level-1.expanded-row
+  .ant-table-cell {
+  @apply bg-white;
+}
+.ant-table-row.ant-table-row-level-0.table-row-dark {
+  @apply bg-gray-50;
+}
+
+.ant-table-row.ant-table-row-level-0:has(+ .expanded-row) {
+  @apply bg-selected text-primary;
+}
+.ant-carousel .slick-prev,
+.ant-carousel .slick-next {
+  color: var(--color-primary) !important;
+}

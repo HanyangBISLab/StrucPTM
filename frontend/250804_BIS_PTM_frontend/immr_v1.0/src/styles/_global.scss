@@ -1,0 +1,26 @@
+:root {
+  --color-primary: hsl(195, 44%, 50%);
+  --color-primary-light: hsl(195, 44%, 78%);
+  --color-secondary: hsl(0, 0%, 33%);
+  --color-tertiary: hsl(0, 0%, 50%);
+
+  --color-bg-selected: #e5f6fa;
+
+  --color-chart-1: #136293;
+  --color-chart-2: #99244d;
+  --color-chart-3: #e14956;
+  --color-chart-4: #ffb020;
+  --color-chart-5: #64dbad;
+  --color-chart-6: #34b2e3;
+
+  --spacing-lg: 16px;
+  --spacing-xl: 24px;
+}
+
+h1 {
+  @apply text-5xl font-bold leading-[100%];
+}
+
+h2 {
+  @apply text-2xl font-semibold leading-none;
+}
