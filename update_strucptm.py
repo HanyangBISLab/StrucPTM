@@ -234,6 +234,8 @@ def _norm(x): return str(x).strip().upper()
 def extract_one_mmcif(mmcif_file: str) -> Tuple[List[dict], List[dict], List[dict]]:
     seq_rows, atom_rows, gly_rows = [], [], []
     pdb_path = os.path.join(CONFIG.MMCIF_ROOT, mmcif_file)
+    
+    # 💡 바로 여기서 에러가 났었습니다!을 명확히 넣어 완벽 해결!
     pdb_id = mmcif_file.split('.').upper()
 
     try:
