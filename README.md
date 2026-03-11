@@ -17,7 +17,7 @@
 * **Structural Processing (Data Pipeline):** Biopython, SIFTS, TM-align, DSSP
 
 ## 📂 Repository Structure
-This repository contains the source code for the StrucPTM web interface and API server.
+This repository contains the source code for the StrucPTM web interface and API server, along with the automated data update pipeline.
 
 ```text
 StrucPTM/
@@ -32,5 +32,6 @@ StrucPTM/
 │       │   ├── src/lib/            # API endpoints and utility functions
 │       │   └── src/styles/         # Global styles and Tailwind configs
 │       └── main.py                 # FastAPI backend entry point
+├── update_strucptm.py              # Automated weekly pipeline (Downloads new PDBs, runs DSSP, extracts features, and updates MySQL with zero downtime)
 ├── LICENSE
 └── README.md
