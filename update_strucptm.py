@@ -92,7 +92,7 @@ warnings.filterwarnings("ignore")
 
 
 # =====================================================================
-# [GLOBALS] 전역 설정 및 사전 정의 (멀티 프로세싱 접근용)
+# [GLOBALS] 전역 설정 및 사전 정의
 # =====================================================================
 MAX_WORKERS = 32
 
@@ -187,8 +187,148 @@ UNKNOWN_CHAR = 'X'
 
 
 # =====================================================================
-# [FUNCTIONS] 멀티 프로세싱을 위한 최상단 함수 정의 모음
+# [FUNCTIONS] 멀티 프로세싱을 위한 최상단 함수 정의 모음 
+# (에러를 방지하기 위해 main 안의 모든 함수를 밖으로 빼냈습니다)
 # =====================================================================
+def download_with_progress(url: str, dest: Path, chunk_size=1024*1024, max_retries=5):
+    for attempt in range(1, max_retries+1):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req) as resp:
+                total = resp.getheader("Content-Length")
+                total = int(total) if total is not None else None
+                tmp = dest.with_suffix(dest.suffix + ".part")
+                if tmp.exists(): tmp.unlink()
+                with open(tmp, "wb") as f, tqdm(total=total, unit="B", unit_scale=True, unit_divisor=1024, desc=dest.name, dynamic_ncols=True) as bar:
+                    while True:
+                        chunk = resp.read(chunk_size)
+                        if not chunk: break
+                        f.write(chunk)
+                        bar.update(len(chunk))
+                tmp.replace(dest)
+            return True
+        except Exception as e:
+            if attempt == max_retries: return False
+            time.sleep(2 * attempt)
+
+def parse_uniprot_sprot_func(uniprot_path: Path) -> pd.DataFrame:
+    def _push_current(rec_list: List[Dict], cur: Dict):
+        if not cur: return
+        cur["Description"] = " ".join(cur.get("Description", [])).strip() or None
+        cur["Organism"] = " ".join(cur.get("Organism", [])).strip().rstrip(".") or None
+        if "Organism_ID" in cur:
+            m_id = re.search(r"NCBI_TaxID=(\d+)", cur["Organism_ID"])
+            cur["Organism_ID"] = m_id.group(1) if m_id else None
+        else: cur["Organism_ID"] = None
+        if "PDB" in cur:
+            seen, uniq = set(), []
+            for x in cur["PDB"]:
+                x_up = x.strip().upper()
+                if re.fullmatch(r"[0-9A-Z]{4}", x_up) and x_up not in seen:
+                    seen.add(x_up); uniq.append(x_up)
+            cur["PDB"] = ", ".join(uniq) if uniq else None
+        else: cur["PDB"] = None
+        cur["amino_acid_sequence"] = cur.get("amino_acid_sequence", None) or None
+        cur["IDR_regions"] = cur.get("IDR_regions", [])
+        acc = cur.get("Accession")
+        if isinstance(acc, list): cur["Accession"] = acc[0] if acc else None
+        rec_list.append({"ID": cur.get("ID"), "Accession": cur.get("Accession"), "Description": cur.get("Description"), "Organism": cur.get("Organism"), "Organism_ID": cur.get("Organism_ID"), "amino_acid_sequence": cur.get("amino_acid_sequence"), "IDR_regions": cur.get("IDR_regions"), "PDB": cur.get("PDB")})
+
+    re_id = re.compile(r"^ID\s+(\S+)"); re_ac = re.compile(r"^AC\s+(.+)"); re_de = re.compile(r"^DE\s+(.+)"); re_os = re.compile(r"^OS\s+(.+)")
+    re_ox = re.compile(r"^OX\s+(.+)"); re_dr_pdb = re.compile(r"^DR\s+PDB;\s*([0-9A-Za-z]{4});"); re_ft_region = re.compile(r"^FT\s+REGION\s+(\d+)\.\.(\d+)\s+(.*)$", re.IGNORECASE)
+
+    with open(uniprot_path, "r", encoding="utf-8", errors="ignore") as f: lines = f.readlines()
+    records, cur, in_seq = [], {}, False
+    for line in tqdm(lines, desc="Parsing UniProt", unit="line", dynamic_ncols=True):
+        line = line.rstrip("\n")
+        if line.startswith("//"): _push_current(records, cur); cur, in_seq = {}, False; continue
+        if line.startswith("SQ "): in_seq, cur["amino_acid_sequence"] = True, ""; continue
+        if in_seq:
+            if line.startswith("  "): cur["amino_acid_sequence"] += re.sub(r"[^A-Za-z]", "", line); continue
+            else: in_seq = False
+        m = re_id.match(line)
+        if m: cur["ID"] = m.group(1).strip(); continue
+        m = re_ac.match(line)
+        if m:
+            parts = [p.strip() for p in m.group(1).strip().split(";") if p.strip()]
+            if parts: cur.setdefault("Accession", []).extend(parts)
+            continue
+        m = re_de.match(line)
+        if m: cur.setdefault("Description", []).append(m.group(1).strip()); continue
+        m = re_os.match(line)
+        if m: cur.setdefault("Organism", []).append(m.group(1).strip()); continue
+        m = re_ox.match(line)
+        if m: cur["Organism_ID"] = m.group(1).strip(); continue
+        m = re_dr_pdb.match(line)
+        if m: cur.setdefault("PDB", []).append(m.group(1).upper()); continue
+        m = re_ft_region.match(line)
+        if m:
+            start, end, desc = m.groups()
+            if "disordered" in desc.lower():
+                try: cur.setdefault("IDR_regions", []).append((int(start), int(end)))
+                except: pass
+            continue
+    if cur: _push_current(records, cur)
+    return pd.DataFrame.from_records(records, columns=["ID", "Accession", "Description", "Organism", "Organism_ID", "amino_acid_sequence", "IDR_regions", "PDB"])
+
+def download_and_extract(pdb_id: str):
+    url = f"https://files.rcsb.org/download/{pdb_id}.cif.gz"
+    target_dir = mmcif_divided_root / "mmCIF" / pdb_id[1:3]
+    target_dir.mkdir(parents=True, exist_ok=True)
+    local_gz, local_cif, tmp_path = target_dir / f"{pdb_id}.cif.gz", target_dir / f"{pdb_id}.cif", target_dir / f"{pdb_id}.part"
+    for attempt in range(1, 4):
+        try:
+            with requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, stream=True, timeout=30) as r:
+                if r.status_code == 404: return (pdb_id, False, "HTTP 404")
+                r.raise_for_status()
+                with open(tmp_path, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=1048576):
+                        if chunk: f.write(chunk)
+                tmp_path.replace(local_gz)
+                with gzip.open(local_gz, "rb") as gz_in, open(local_cif, "wb") as f_out: shutil.copyfileobj(gz_in, f_out)
+                local_gz.unlink()
+                if local_cif.stat().st_size == 0: local_cif.unlink(); raise ValueError("Empty extracted file")
+                return (pdb_id, True, "Success")
+        except Exception as e: time.sleep(1); last_err = str(e)
+    for p in [tmp_path, local_gz, local_cif]:
+        if p.exists():
+            try: p.unlink()
+            except: pass
+    return (pdb_id, False, last_err)
+
+class ChainSelect(Select):
+    def __init__(self, chain_id: str): super().__init__(); self.chain_id = str(chain_id)
+    def accept_chain(self, chain): return str(chain.id) == self.chain_id
+
+def split_mmcif_by_chain_wrapper(file_path: Path):
+    structure_id = file_path.stem
+    if list(mmcif_chain_root.glob(f"{structure_id}:*.cif")): return
+    try:
+        parser = FastMMCIFParser(QUIET=True) if 'FastMMCIFParser' in globals() and FastMMCIFParser else MMCIFParser(QUIET=True)
+        st = parser.get_structure(structure_id, str(file_path))
+        first_model = next(iter(st), None)
+        if not first_model: return
+        for chain in first_model:
+            cid = str(chain.id)
+            out_path = mmcif_chain_root / f"{structure_id}:{cid}.cif"
+            if out_path.exists() and out_path.stat().st_size > 0: continue
+            io = PDBIO(); io.set_structure(st); io.save(str(out_path), select=ChainSelect(cid))
+    except: pass
+
+def run_dssp_for_mmcif_wrapper(mmcif_path: Path):
+    pdb_id = mmcif_path.stem
+    dssp_path = Path(dssp_root) / f"{pdb_id}.dssp"
+    if dssp_path.exists() and dssp_path.stat().st_size > 0: return "skip"
+    try:
+        subprocess.run(["mkdssp", "-i", str(mmcif_path), "-o", str(dssp_path)], check=True, capture_output=True, text=True, timeout=120)
+        return "ok"
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
+        if dssp_path.exists():
+            try: dssp_path.unlink()
+            except: pass
+        return "error"
+    except Exception: return "error"
+
 def get_cb_or_ca_coord(residue):
     if "CB" in residue: return np.asarray(residue["CB"].get_coord(), dtype=float)
     if "CA" in residue: return np.asarray(residue["CA"].get_coord(), dtype=float)
@@ -361,16 +501,13 @@ def _worker_align(task):
     key, qseq, cand_pairs, cand_str = task
     res = []
     
-    # 💡 [방어 코드 1] 쿼리가 초거대 단백질(5000 이상)이면 무한 루프 방지를 위해 계산 통째로 스킵
+    # 초거대 단백질(5000 이상) 스킵 방어코드
     if len(qseq) > 5000:
         return key, [], cand_str
 
     for ck, cs in cand_pairs:
         if not cs: continue
-        
-        # 💡 [방어 코드 2] 짝꿍 서열이 초거대 단백질이어도 스킵
-        if len(cs) > 5000:
-            continue
+        if len(cs) > 5000: continue
             
         if not BIO_OK:
             sc = sum(1 for i in range(min(len(qseq), len(cs))) if qseq[i]==cs[i])/max(len(qseq),len(cs))
@@ -385,23 +522,22 @@ def _worker_align(task):
             except MemoryError:
                 sc = 0.0
         
-        # 💡 [핵심 반영] 점수와 무관하게(0.8 미만도 포함) 모든 결과를 피클 캐시(res 리스트)에 저장합니다.
         res.append((ck, sc))
             
     return key, sorted(res, key=lambda x: x[1], reverse=True), cand_str
+
+def norm_str(v): return None if pd.isna(v) or not str(v).strip() else str(v).strip()
+def norm_int(v): return None if pd.isna(v) or not str(v).strip() else int(float(str(v).strip()))
+def norm_float(v): return None if pd.isna(v) or not str(v).strip() else float(str(v).strip())
 
 
 # =====================================================================
 # [MAIN] 전체 파이프라인 실행 로직
 # =====================================================================
 def main():
-    # 디렉터리 생성
     for path in [uniprot_root, mmcif_root, mmcif_chain_root, dssp_root, uniprot_csv_path.parent, Path(inter_sequence_df_path).parent]:
         path.mkdir(parents=True, exist_ok=True)
 
-    # -----------------------------------------------------------------
-    # [PRE-CHECK] 웹 서비스용 업데이트 날짜 즉시 기록
-    # -----------------------------------------------------------------
     try:
         date_file = "/home/bis/230711_JSG/241125_PTM/250818_webservice/backend/snapshot_date.txt"
         os.makedirs(os.path.dirname(date_file), exist_ok=True)
@@ -412,9 +548,6 @@ def main():
     except Exception as e:
         print(f"\n[ERROR] 날짜 기록 중 오류 발생: {e}")
 
-    # -----------------------------------------------------------------
-    # [PHASE 1] UNIPROT & SIFTS PREP
-    # -----------------------------------------------------------------
     print("\n" + "="*60)
     print(" [PHASE 1] UniProt & SIFTS 데이터 준비 (항상 최신화)")
     print("="*60)
@@ -424,27 +557,6 @@ def main():
         ("https://ftp.ebi.ac.uk/pub/databases/msd/sifts/flatfiles/csv/pdb_chain_uniprot.csv.gz", uniprot_root / "pdb_chain_uniprot.csv.gz"),
         ("https://ftp.ebi.ac.uk/pub/databases/msd/sifts/flatfiles/csv/uniprot_pdb.csv.gz", uniprot_root / "uniprot_pdb.csv.gz"),
     ]
-
-    def download_with_progress(url: str, dest: Path, chunk_size=1024*1024, max_retries=5):
-        for attempt in range(1, max_retries+1):
-            try:
-                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(req) as resp:
-                    total = resp.getheader("Content-Length")
-                    total = int(total) if total is not None else None
-                    tmp = dest.with_suffix(dest.suffix + ".part")
-                    if tmp.exists(): tmp.unlink()
-                    with open(tmp, "wb") as f, tqdm(total=total, unit="B", unit_scale=True, unit_divisor=1024, desc=dest.name, dynamic_ncols=True) as bar:
-                        while True:
-                            chunk = resp.read(chunk_size)
-                            if not chunk: break
-                            f.write(chunk)
-                            bar.update(len(chunk))
-                    tmp.replace(dest)
-                return True
-            except Exception as e:
-                if attempt == max_retries: return False
-                time.sleep(2 * attempt)
 
     for url, dest in targets:
         print(f"-> Downloading (Always) {dest.name}...")
@@ -457,66 +569,6 @@ def main():
         with gzip.open(gz_path, "rb") as f_in, open(dest_path, "wb") as f_out:
             shutil.copyfileobj(f_in, f_out)
 
-    def parse_uniprot_sprot_func(uniprot_path: Path) -> pd.DataFrame:
-        def _push_current(rec_list: List[Dict], cur: Dict):
-            if not cur: return
-            cur["Description"] = " ".join(cur.get("Description", [])).strip() or None
-            cur["Organism"] = " ".join(cur.get("Organism", [])).strip().rstrip(".") or None
-            if "Organism_ID" in cur:
-                m_id = re.search(r"NCBI_TaxID=(\d+)", cur["Organism_ID"])
-                cur["Organism_ID"] = m_id.group(1) if m_id else None
-            else: cur["Organism_ID"] = None
-            if "PDB" in cur:
-                seen, uniq = set(), []
-                for x in cur["PDB"]:
-                    x_up = x.strip().upper()
-                    if re.fullmatch(r"[0-9A-Z]{4}", x_up) and x_up not in seen:
-                        seen.add(x_up); uniq.append(x_up)
-                cur["PDB"] = ", ".join(uniq) if uniq else None
-            else: cur["PDB"] = None
-            cur["amino_acid_sequence"] = cur.get("amino_acid_sequence", None) or None
-            cur["IDR_regions"] = cur.get("IDR_regions", [])
-            acc = cur.get("Accession")
-            if isinstance(acc, list): cur["Accession"] = acc[0] if acc else None
-            rec_list.append({"ID": cur.get("ID"), "Accession": cur.get("Accession"), "Description": cur.get("Description"), "Organism": cur.get("Organism"), "Organism_ID": cur.get("Organism_ID"), "amino_acid_sequence": cur.get("amino_acid_sequence"), "IDR_regions": cur.get("IDR_regions"), "PDB": cur.get("PDB")})
-
-        re_id = re.compile(r"^ID\s+(\S+)"); re_ac = re.compile(r"^AC\s+(.+)"); re_de = re.compile(r"^DE\s+(.+)"); re_os = re.compile(r"^OS\s+(.+)")
-        re_ox = re.compile(r"^OX\s+(.+)"); re_dr_pdb = re.compile(r"^DR\s+PDB;\s*([0-9A-Za-z]{4});"); re_ft_region = re.compile(r"^FT\s+REGION\s+(\d+)\.\.(\d+)\s+(.*)$", re.IGNORECASE)
-
-        with open(uniprot_path, "r", encoding="utf-8", errors="ignore") as f: lines = f.readlines()
-        records, cur, in_seq = [], {}, False
-        for line in tqdm(lines, desc="Parsing UniProt", unit="line", dynamic_ncols=True):
-            line = line.rstrip("\n")
-            if line.startswith("//"): _push_current(records, cur); cur, in_seq = {}, False; continue
-            if line.startswith("SQ "): in_seq, cur["amino_acid_sequence"] = True, ""; continue
-            if in_seq:
-                if line.startswith("  "): cur["amino_acid_sequence"] += re.sub(r"[^A-Za-z]", "", line); continue
-                else: in_seq = False
-            m = re_id.match(line)
-            if m: cur["ID"] = m.group(1).strip(); continue
-            m = re_ac.match(line)
-            if m:
-                parts = [p.strip() for p in m.group(1).strip().split(";") if p.strip()]
-                if parts: cur.setdefault("Accession", []).extend(parts)
-                continue
-            m = re_de.match(line)
-            if m: cur.setdefault("Description", []).append(m.group(1).strip()); continue
-            m = re_os.match(line)
-            if m: cur.setdefault("Organism", []).append(m.group(1).strip()); continue
-            m = re_ox.match(line)
-            if m: cur["Organism_ID"] = m.group(1).strip(); continue
-            m = re_dr_pdb.match(line)
-            if m: cur.setdefault("PDB", []).append(m.group(1).upper()); continue
-            m = re_ft_region.match(line)
-            if m:
-                start, end, desc = m.groups()
-                if "disordered" in desc.lower():
-                    try: cur.setdefault("IDR_regions", []).append((int(start), int(end)))
-                    except: pass
-                continue
-        if cur: _push_current(records, cur)
-        return pd.DataFrame.from_records(records, columns=["ID", "Accession", "Description", "Organism", "Organism_ID", "amino_acid_sequence", "IDR_regions", "PDB"])
-
     uniprot_dat_path = uniprot_root / "uniprot_sprot.dat"
     print("[PROCESS] UniProt DAT 파싱 및 CSV 변환 중 (항상 최신화)...")
     swiss_prot_df = parse_uniprot_sprot_func(uniprot_dat_path)
@@ -525,37 +577,9 @@ def main():
     print("[SUCCESS] UniProt 파싱 완료")
 
 
-    # -----------------------------------------------------------------
-    # [PHASE 2] PDB DOWNLOAD & FLATTEN
-    # -----------------------------------------------------------------
     print("\n" + "="*60)
     print(" [PHASE 2] PDB(mmCIF) 동기화 및 Flatten")
     print("="*60)
-
-    def download_and_extract(pdb_id: str):
-        url = f"https://files.rcsb.org/download/{pdb_id}.cif.gz"
-        target_dir = mmcif_divided_root / "mmCIF" / pdb_id[1:3]
-        target_dir.mkdir(parents=True, exist_ok=True)
-        local_gz, local_cif, tmp_path = target_dir / f"{pdb_id}.cif.gz", target_dir / f"{pdb_id}.cif", target_dir / f"{pdb_id}.part"
-        for attempt in range(1, 4):
-            try:
-                with requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, stream=True, timeout=30) as r:
-                    if r.status_code == 404: return (pdb_id, False, "HTTP 404")
-                    r.raise_for_status()
-                    with open(tmp_path, "wb") as f:
-                        for chunk in r.iter_content(chunk_size=1048576):
-                            if chunk: f.write(chunk)
-                    tmp_path.replace(local_gz)
-                    with gzip.open(local_gz, "rb") as gz_in, open(local_cif, "wb") as f_out: shutil.copyfileobj(gz_in, f_out)
-                    local_gz.unlink()
-                    if local_cif.stat().st_size == 0: local_cif.unlink(); raise ValueError("Empty extracted file")
-                    return (pdb_id, True, "Success")
-            except Exception as e: time.sleep(1); last_err = str(e)
-        for p in [tmp_path, local_gz, local_cif]:
-            if p.exists():
-                try: p.unlink()
-                except: pass
-        return (pdb_id, False, last_err)
 
     all_ids = set(pid.lower() for pid in requests.get(PDB_API_URL, headers={"User-Agent": "Mozilla/5.0"}, timeout=30).json())
     local_ids = {p.stem.lower() for p in mmcif_root.rglob("*.cif") if p.stat().st_size > 0}
@@ -579,27 +603,9 @@ def main():
                 shutil.move(str(src), str(dst))
 
 
-    # -----------------------------------------------------------------
-    # [PHASE 3] CHAIN SPLIT & DSSP
-    # -----------------------------------------------------------------
     print("\n" + "="*60)
     print(" [PHASE 3] 체인 분할 및 DSSP 2차 구조 계산")
     print("="*60)
-
-    def split_mmcif_by_chain_wrapper(file_path: Path):
-        structure_id = file_path.stem
-        if list(mmcif_chain_root.glob(f"{structure_id}:*.cif")): return
-        try:
-            parser = FastMMCIFParser(QUIET=True) if 'FastMMCIFParser' in globals() and FastMMCIFParser else MMCIFParser(QUIET=True)
-            st = parser.get_structure(structure_id, str(file_path))
-            first_model = next(iter(st), None)
-            if not first_model: return
-            for chain in first_model:
-                cid = str(chain.id)
-                out_path = mmcif_chain_root / f"{structure_id}:{cid}.cif"
-                if out_path.exists() and out_path.stat().st_size > 0: continue
-                io = PDBIO(); io.set_structure(st); io.save(str(out_path), select=ChainSelect(cid))
-        except: pass
 
     all_mmcifs = list(mmcif_root.glob("*.cif"))
     done_struct_ids = {p.stem.split(":", 1)[0] for p in mmcif_chain_root.glob("*.cif") if ":" in p.name and p.stat().st_size > 0}
@@ -608,20 +614,6 @@ def main():
         with ProcessPoolExecutor(max_workers=MAX_WORKERS) as ex:
             list(tqdm(ex.map(split_mmcif_by_chain_wrapper, queue_chains), total=len(queue_chains), desc="Split Chains"))
 
-    def run_dssp_for_mmcif_wrapper(mmcif_path: Path):
-        pdb_id = mmcif_path.stem
-        dssp_path = Path(dssp_root) / f"{pdb_id}.dssp"
-        if dssp_path.exists() and dssp_path.stat().st_size > 0: return "skip"
-        try:
-            subprocess.run(["mkdssp", "-i", str(mmcif_path), "-o", str(dssp_path)], check=True, capture_output=True, text=True, timeout=120)
-            return "ok"
-        except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
-            if dssp_path.exists():
-                try: dssp_path.unlink()
-                except: pass
-            return "error"
-        except Exception: return "error"
-
     done_dssp_ids = {p.stem for p in Path(dssp_root).glob("*.dssp") if p.stat().st_size > 0}
     queue_dssps = [p for p in all_mmcifs if p.stem not in done_dssp_ids]
     if queue_dssps:
@@ -629,9 +621,6 @@ def main():
             list(tqdm(ex.map(run_dssp_for_mmcif_wrapper, queue_dssps, chunksize=100), total=len(queue_dssps), desc="mkdssp"))
 
 
-    # -----------------------------------------------------------------
-    # [PHASE 4] FEATURE EXTRACTION
-    # -----------------------------------------------------------------
     print("\n" + "="*60)
     print(" [PHASE 4] Feature Extraction (PTM, Sequence, Structure)")
     print("="*60)
@@ -710,7 +699,6 @@ def main():
             out = out.merge(swiss_prot_df[["Accession", "Organism"]].drop_duplicates(), left_on="UniProt_Accession_code", right_on="Accession", how="left").drop(columns=["Accession"])
             out["base_residue_name"] = out["pdb_restype"].str.upper().map(lambda x: ptm_to_canonical_3code.get(x, x)).map(lambda x: THREE_TO_FULLNAME.get(x, x))
 
-            # 멀티 프로세싱 (Assembly / Interface)
             out["Assembly_type"], out["Location"] = "Unknown", "Unknown"
             ptm_map = {}
             for idx, r in out.iterrows(): ptm_map.setdefault(r["pdb_id"], {}).setdefault((r["pdb_chain"], int(r["pdb_pos"])), []).append(idx)
@@ -723,7 +711,6 @@ def main():
                             out.at[idx, "Assembly_type"] = asm
                             out.at[idx, "Location"] = locs.get((ch, rn), "Unknown")
 
-            # 멀티 프로세싱 (DSSP)
             out["Secondary_structure"], out["RSA"], out["_base_aa1"], out["orig_idx"] = np.nan, np.nan, out["base_residue_name"].map(FULLNAME_TO_1), out.index
             dssp_tasks = [(pdb, out[out["pdb_id"]==pdb][["pdb_chain", "pdb_pos", "orig_idx", "_base_aa1"]], str(dssp_root), max_ASA) for pdb in out["pdb_id"].unique()]
             with ProcessPoolExecutor(max_workers=MAX_WORKERS) as exe:
@@ -753,9 +740,6 @@ def main():
         StrucPTM_df = inter_StrucPTM_df
 
 
-    # -----------------------------------------------------------------
-    # [PHASE 5] ALIGNMENT & HOMOLOG GROUPING (캐시 완전 무효화 로직 포함)
-    # -----------------------------------------------------------------
     print("\n" + "="*60)
     print(" [PHASE 5] Alignment & Homolog Grouping")
     print("="*60)
@@ -771,7 +755,6 @@ def main():
 
     os.makedirs("./align_df_ckpt", exist_ok=True)
     
-    # 💡 [마이그레이션 핵심] 예전 dict 형태의 메타데이터를 문자열 포맷으로 강제 변환하여 재계산 스킵
     sorted_map = pickle.load(open("./align_df_ckpt/sorted_map.pkl", "rb")) if os.path.exists("./align_df_ckpt/sorted_map.pkl") else {}
     done_keys = pickle.load(open("./align_df_ckpt/done_keys.pkl", "rb")) if os.path.exists("./align_df_ckpt/done_keys.pkl") else set()
     meta_by_key = pickle.load(open("./align_df_ckpt/meta_by_key.pkl", "rb")) if os.path.exists("./align_df_ckpt/meta_by_key.pkl") else {}
@@ -791,16 +774,13 @@ def main():
         
         old_meta = meta_by_key.get(key)
         
-        # 1. 현재 짝꿍과 예전 짝꿍이 완벽히 일치하면 스킵 (정상 캐시 히트)
         if key in done_keys and old_meta == cand_str:
             continue
             
-        # 2. [마이그레이션 방어] 예전 노트북에서 짠 dict 형태의 캐시가 남아있는 경우 -> 캐시 포맷만 문자열(cand_str)로 덮어쓰고 스킵
         if key in done_keys and isinstance(old_meta, dict):
             meta_by_key[key] = cand_str
             continue
             
-        # 3. 예전과 비교해 짝꿍이 새로 추가되었거나, 아예 처음 보는 key인 경우 -> 계산 큐에 넣음
         if cands: 
             tasks.append((key, seq_map[key], [(c, seq_map[c]) for c in cands], cand_str))
         else:
@@ -809,7 +789,6 @@ def main():
 
     if tasks:
         with mp.Pool(MAX_WORKERS) as pool:
-            # 💡 [방어 코드 4] 일정 주기로 중간 저장 (메모리 부담 경감)
             save_interval = 2000
             processed = 0
             for key, res, c_str in tqdm(pool.imap_unordered(_worker_align, tasks, chunksize=1), total=len(tasks), desc="Aligning"):
@@ -818,18 +797,15 @@ def main():
                 meta_by_key[key] = c_str
                 processed += 1
                 
-                # 2000개마다 디스크에 저장
                 if processed % save_interval == 0:
                     with open("./align_df_ckpt/sorted_map.pkl", "wb") as f: pickle.dump(sorted_map, f)
                     with open("./align_df_ckpt/done_keys.pkl", "wb") as f: pickle.dump(done_keys, f)
                     with open("./align_df_ckpt/meta_by_key.pkl", "wb") as f: pickle.dump(meta_by_key, f)
                     
-        # 루프 종료 후 최종 저장
         with open("./align_df_ckpt/sorted_map.pkl", "wb") as f: pickle.dump(sorted_map, f)
         with open("./align_df_ckpt/done_keys.pkl", "wb") as f: pickle.dump(done_keys, f)
         with open("./align_df_ckpt/meta_by_key.pkl", "wb") as f: pickle.dump(meta_by_key, f)
 
-    # 💡 [핵심 반영] 저장할 때는 모든 점수가 저장되지만, Dataframe에 넣을 때만 0.8 이상인 항목만 문자열로 남깁니다.
     StrucPTM_df["scores_filtered"] = StrucPTM_df["__key__"].map(lambda k: ", ".join([f"{pc}|{sc:.4f}" for pc, sc in sorted_map.get(k, []) if sc >= 0.8]) if k in sorted_map else "")
     StrucPTM_df = StrucPTM_df.drop(columns=["__key__"])
     if "RSA" in StrucPTM_df.columns:
@@ -848,16 +824,9 @@ def main():
     StrucPTM_df.to_csv(MYSQL_PTM_CSV, index=False)
 
 
-    # -----------------------------------------------------------------
-    # [PHASE 6] MYSQL ZERO-DOWNTIME INSERTION
-    # -----------------------------------------------------------------
     print("\n" + "="*60)
     print(" [PHASE 6] MySQL Zero-Downtime Insertion")
     print("="*60)
-
-    def norm_str(v): return None if pd.isna(v) or not str(v).strip() else str(v).strip()
-    def norm_int(v): return None if pd.isna(v) or not str(v).strip() else int(float(str(v).strip()))
-    def norm_float(v): return None if pd.isna(v) or not str(v).strip() else float(str(v).strip())
 
     conn = pymysql.connect(host=DB_HOST, user=DB_USER, password=DB_PASS, db=DB_NAME, charset="utf8mb4", autocommit=False)
     try:
