@@ -360,20 +360,33 @@ def parse_atom_types(x):
 def _worker_align(task):
     key, qseq, cand_pairs, cand_str = task
     res = []
+    
+    # 💡 [방어 코드 1] 쿼리가 초거대 단백질(5000 이상)이면 무한 루프 방지를 위해 계산 통째로 스킵
+    if len(qseq) > 5000:
+        return key, [], cand_str
+
     for ck, cs in cand_pairs:
         if not cs: continue
+        
+        # 💡 [방어 코드 2] 짝꿍 서열이 초거대 단백질이어도 스킵
+        if len(cs) > 5000:
+            continue
+            
         if not BIO_OK:
             sc = sum(1 for i in range(min(len(qseq), len(cs))) if qseq[i]==cs[i])/max(len(qseq),len(cs))
         else:
-            aln = pairwise2.align.globalms(qseq,cs,1,-1,-5,-1,one_alignment_only=True)
-            if aln:
-                a, b = aln[0][:2]
-                sc = sum(1 for i in range(len(a)) if a[i]==b[i] and a[i]!="-")/len(a)
-            else: sc = 0.0
+            try:
+                aln = pairwise2.align.globalms(qseq, cs, 1, -1, -5, -1, one_alignment_only=True)
+                if aln:
+                    a, b = aln[0][:2]
+                    sc = sum(1 for i in range(len(a)) if a[i]==b[i] and a[i]!="-")/len(a)
+                else: 
+                    sc = 0.0
+            except MemoryError:
+                sc = 0.0
         
-        # 0.8 이상인 것만 필터링하여 저장
-        if sc >= 0.8:
-            res.append((ck, sc))
+        # 💡 [핵심 반영] 점수와 무관하게(0.8 미만도 포함) 모든 결과를 피클 캐시(res 리스트)에 저장합니다.
+        res.append((ck, sc))
             
     return key, sorted(res, key=lambda x: x[1], reverse=True), cand_str
 
@@ -796,16 +809,28 @@ def main():
 
     if tasks:
         with mp.Pool(MAX_WORKERS) as pool:
+            # 💡 [방어 코드 4] 일정 주기로 중간 저장 (메모리 부담 경감)
+            save_interval = 2000
+            processed = 0
             for key, res, c_str in tqdm(pool.imap_unordered(_worker_align, tasks, chunksize=1), total=len(tasks), desc="Aligning"):
                 sorted_map[key] = res
                 done_keys.add(key)
                 meta_by_key[key] = c_str
+                processed += 1
                 
+                # 2000개마다 디스크에 저장
+                if processed % save_interval == 0:
+                    with open("./align_df_ckpt/sorted_map.pkl", "wb") as f: pickle.dump(sorted_map, f)
+                    with open("./align_df_ckpt/done_keys.pkl", "wb") as f: pickle.dump(done_keys, f)
+                    with open("./align_df_ckpt/meta_by_key.pkl", "wb") as f: pickle.dump(meta_by_key, f)
+                    
+        # 루프 종료 후 최종 저장
         with open("./align_df_ckpt/sorted_map.pkl", "wb") as f: pickle.dump(sorted_map, f)
         with open("./align_df_ckpt/done_keys.pkl", "wb") as f: pickle.dump(done_keys, f)
         with open("./align_df_ckpt/meta_by_key.pkl", "wb") as f: pickle.dump(meta_by_key, f)
 
-    StrucPTM_df["scores_filtered"] = StrucPTM_df["__key__"].map(lambda k: ", ".join([f"{pc}|{sc:.4f}" for pc, sc in sorted_map.get(k, [])]) if k in sorted_map else "")
+    # 💡 [핵심 반영] 저장할 때는 모든 점수가 저장되지만, Dataframe에 넣을 때만 0.8 이상인 항목만 문자열로 남깁니다.
+    StrucPTM_df["scores_filtered"] = StrucPTM_df["__key__"].map(lambda k: ", ".join([f"{pc}|{sc:.4f}" for pc, sc in sorted_map.get(k, []) if sc >= 0.8]) if k in sorted_map else "")
     StrucPTM_df = StrucPTM_df.drop(columns=["__key__"])
     if "RSA" in StrucPTM_df.columns:
         StrucPTM_df["RSA"] = StrucPTM_df["RSA"].clip(upper=1.0)
