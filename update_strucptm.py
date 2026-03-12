@@ -96,6 +96,9 @@ warnings.filterwarnings("ignore")
 # =====================================================================
 MAX_WORKERS = 32
 
+# 💡 [핵심 추가] 누락되었던 PDB API URL 추가
+PDB_API_URL = "https://data.rcsb.org/rest/v1/holdings/current/entry_ids"
+
 data_root = '/data1/JSG/'
 uniprot_root = Path("/data1/JSG/UniProt/")
 mmcif_root = Path("/data1/JSG/mmcifs/")
@@ -822,7 +825,6 @@ def main():
     finally:
         conn.close()
         print("\n[FINISHED] MySQL connection closed. Pipeline Complete!")
-
 
 if __name__ == "__main__":
     main()
