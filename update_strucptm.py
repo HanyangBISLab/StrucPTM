@@ -96,7 +96,6 @@ warnings.filterwarnings("ignore")
 # =====================================================================
 MAX_WORKERS = 32
 
-# 💡 [핵심 추가] 누락되었던 PDB API URL 추가
 PDB_API_URL = "https://data.rcsb.org/rest/v1/holdings/current/entry_ids"
 
 data_root = '/data1/JSG/'
@@ -358,68 +357,25 @@ def parse_atom_types(x):
     except: pass
     return [tok.strip().strip("'").strip('"').upper() for tok in str(x).strip("[]").split(",") if tok.strip()]
 
-def download_and_extract(pdb_id: str):
-    url = f"https://files.rcsb.org/download/{pdb_id}.cif.gz"
-    target_dir = mmcif_divided_root / "mmCIF" / pdb_id[1:3]
-    target_dir.mkdir(parents=True, exist_ok=True)
-    local_gz, local_cif, tmp_path = target_dir / f"{pdb_id}.cif.gz", target_dir / f"{pdb_id}.cif", target_dir / f"{pdb_id}.part"
-    for attempt in range(1, 4):
-        try:
-            with requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, stream=True, timeout=30) as r:
-                if r.status_code == 404: return (pdb_id, False, "HTTP 404")
-                r.raise_for_status()
-                with open(tmp_path, "wb") as f:
-                    for chunk in r.iter_content(chunk_size=1048576):
-                        if chunk: f.write(chunk)
-                tmp_path.replace(local_gz)
-                with gzip.open(local_gz, "rb") as gz_in, open(local_cif, "wb") as f_out: shutil.copyfileobj(gz_in, f_out)
-                local_gz.unlink()
-                if local_cif.stat().st_size == 0: local_cif.unlink(); raise ValueError("Empty extracted file")
-                return (pdb_id, True, "Success")
-        except Exception as e: time.sleep(1); last_err = str(e)
-    for p in [tmp_path, local_gz, local_cif]:
-        if p.exists():
-            try: p.unlink()
-            except: pass
-    return (pdb_id, False, last_err)
-
-class ChainSelect(Select):
-    def __init__(self, chain_id: str): super().__init__(); self.chain_id = str(chain_id)
-    def accept_chain(self, chain): return str(chain.id) == self.chain_id
-
-def split_mmcif_by_chain(file_path: Path):
-    structure_id = file_path.stem
-    if list(mmcif_chain_root.glob(f"{structure_id}:*.cif")): return
-    try:
-        parser = FastMMCIFParser(QUIET=True) if 'FastMMCIFParser' in globals() and FastMMCIFParser else MMCIFParser(QUIET=True)
-        st = parser.get_structure(structure_id, str(file_path))
-        first_model = next(iter(st), None)
-        if not first_model: return
-        for chain in first_model:
-            cid = str(chain.id)
-            out_path = mmcif_chain_root / f"{structure_id}:{cid}.cif"
-            if out_path.exists() and out_path.stat().st_size > 0: continue
-            io = PDBIO(); io.set_structure(st); io.save(str(out_path), select=ChainSelect(cid))
-    except: pass
-
-def run_dssp_for_mmcif(mmcif_path: Path):
-    pdb_id = mmcif_path.stem
-    dssp_path = dssp_root / f"{pdb_id}.dssp"
-    if dssp_path.exists() and dssp_path.stat().st_size > 0: return "skip"
-    try:
-        subprocess.run(["mkdssp", "-i", str(mmcif_path), "-o", str(dssp_path)], check=True, capture_output=True, text=True, timeout=120)
-        return "ok"
-    except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
-        if dssp_path.exists():
-            try: dssp_path.unlink()
-            except: pass
-        return "error"
-    except Exception: return "error"
-
 def _worker_align(task):
-    key, qseq, cand_pairs = task
-    res = [(ck, sum(1 for i in range(min(len(qseq), len(cs))) if qseq[i]==cs[i])/max(len(qseq),len(cs)) if not BIO_OK else (lambda a,b: sum(1 for i in range(len(a)) if a[i]==b[i] and a[i]!="-")/len(a))(*pairwise2.align.globalms(qseq,cs,1,-1,-5,-1,one_alignment_only=True)[0][:2])) for ck, cs in cand_pairs if cs]
-    return key, sorted([(c, sc) for c, sc in res if sc >= 0.8], key=lambda x: x[1], reverse=True)
+    key, qseq, cand_pairs, cand_str = task
+    res = []
+    for ck, cs in cand_pairs:
+        if not cs: continue
+        if not BIO_OK:
+            sc = sum(1 for i in range(min(len(qseq), len(cs))) if qseq[i]==cs[i])/max(len(qseq),len(cs))
+        else:
+            aln = pairwise2.align.globalms(qseq,cs,1,-1,-5,-1,one_alignment_only=True)
+            if aln:
+                a, b = aln[0][:2]
+                sc = sum(1 for i in range(len(a)) if a[i]==b[i] and a[i]!="-")/len(a)
+            else: sc = 0.0
+        
+        # 0.8 이상인 것만 필터링하여 저장
+        if sc >= 0.8:
+            res.append((ck, sc))
+            
+    return key, sorted(res, key=lambda x: x[1], reverse=True), cand_str
 
 
 # =====================================================================
@@ -563,6 +519,31 @@ def main():
     print(" [PHASE 2] PDB(mmCIF) 동기화 및 Flatten")
     print("="*60)
 
+    def download_and_extract(pdb_id: str):
+        url = f"https://files.rcsb.org/download/{pdb_id}.cif.gz"
+        target_dir = mmcif_divided_root / "mmCIF" / pdb_id[1:3]
+        target_dir.mkdir(parents=True, exist_ok=True)
+        local_gz, local_cif, tmp_path = target_dir / f"{pdb_id}.cif.gz", target_dir / f"{pdb_id}.cif", target_dir / f"{pdb_id}.part"
+        for attempt in range(1, 4):
+            try:
+                with requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, stream=True, timeout=30) as r:
+                    if r.status_code == 404: return (pdb_id, False, "HTTP 404")
+                    r.raise_for_status()
+                    with open(tmp_path, "wb") as f:
+                        for chunk in r.iter_content(chunk_size=1048576):
+                            if chunk: f.write(chunk)
+                    tmp_path.replace(local_gz)
+                    with gzip.open(local_gz, "rb") as gz_in, open(local_cif, "wb") as f_out: shutil.copyfileobj(gz_in, f_out)
+                    local_gz.unlink()
+                    if local_cif.stat().st_size == 0: local_cif.unlink(); raise ValueError("Empty extracted file")
+                    return (pdb_id, True, "Success")
+            except Exception as e: time.sleep(1); last_err = str(e)
+        for p in [tmp_path, local_gz, local_cif]:
+            if p.exists():
+                try: p.unlink()
+                except: pass
+        return (pdb_id, False, last_err)
+
     all_ids = set(pid.lower() for pid in requests.get(PDB_API_URL, headers={"User-Agent": "Mozilla/5.0"}, timeout=30).json())
     local_ids = {p.stem.lower() for p in mmcif_root.rglob("*.cif") if p.stat().st_size > 0}
     missing_ids = list(all_ids - local_ids)
@@ -592,18 +573,47 @@ def main():
     print(" [PHASE 3] 체인 분할 및 DSSP 2차 구조 계산")
     print("="*60)
 
+    def split_mmcif_by_chain_wrapper(file_path: Path):
+        structure_id = file_path.stem
+        if list(mmcif_chain_root.glob(f"{structure_id}:*.cif")): return
+        try:
+            parser = FastMMCIFParser(QUIET=True) if 'FastMMCIFParser' in globals() and FastMMCIFParser else MMCIFParser(QUIET=True)
+            st = parser.get_structure(structure_id, str(file_path))
+            first_model = next(iter(st), None)
+            if not first_model: return
+            for chain in first_model:
+                cid = str(chain.id)
+                out_path = mmcif_chain_root / f"{structure_id}:{cid}.cif"
+                if out_path.exists() and out_path.stat().st_size > 0: continue
+                io = PDBIO(); io.set_structure(st); io.save(str(out_path), select=ChainSelect(cid))
+        except: pass
+
     all_mmcifs = list(mmcif_root.glob("*.cif"))
     done_struct_ids = {p.stem.split(":", 1)[0] for p in mmcif_chain_root.glob("*.cif") if ":" in p.name and p.stat().st_size > 0}
     queue_chains = [p for p in all_mmcifs if p.stem not in done_struct_ids]
     if queue_chains:
         with ProcessPoolExecutor(max_workers=MAX_WORKERS) as ex:
-            list(tqdm(ex.map(split_mmcif_by_chain, queue_chains), total=len(queue_chains), desc="Split Chains"))
+            list(tqdm(ex.map(split_mmcif_by_chain_wrapper, queue_chains), total=len(queue_chains), desc="Split Chains"))
 
-    done_dssp_ids = {p.stem for p in dssp_root.glob("*.dssp") if p.stat().st_size > 0}
+    def run_dssp_for_mmcif_wrapper(mmcif_path: Path):
+        pdb_id = mmcif_path.stem
+        dssp_path = Path(dssp_root) / f"{pdb_id}.dssp"
+        if dssp_path.exists() and dssp_path.stat().st_size > 0: return "skip"
+        try:
+            subprocess.run(["mkdssp", "-i", str(mmcif_path), "-o", str(dssp_path)], check=True, capture_output=True, text=True, timeout=120)
+            return "ok"
+        except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
+            if dssp_path.exists():
+                try: dssp_path.unlink()
+                except: pass
+            return "error"
+        except Exception: return "error"
+
+    done_dssp_ids = {p.stem for p in Path(dssp_root).glob("*.dssp") if p.stat().st_size > 0}
     queue_dssps = [p for p in all_mmcifs if p.stem not in done_dssp_ids]
     if queue_dssps:
         with ProcessPoolExecutor(max_workers=MAX_WORKERS) as ex:
-            list(tqdm(ex.map(run_dssp_for_mmcif, queue_dssps, chunksize=100), total=len(queue_dssps), desc="mkdssp"))
+            list(tqdm(ex.map(run_dssp_for_mmcif_wrapper, queue_dssps, chunksize=100), total=len(queue_dssps), desc="mkdssp"))
 
 
     # -----------------------------------------------------------------
@@ -731,7 +741,7 @@ def main():
 
 
     # -----------------------------------------------------------------
-    # [PHASE 5] ALIGNMENT & HOMOLOG GROUPING
+    # [PHASE 5] ALIGNMENT & HOMOLOG GROUPING (캐시 완전 무효화 로직 포함)
     # -----------------------------------------------------------------
     print("\n" + "="*60)
     print(" [PHASE 5] Alignment & Homolog Grouping")
@@ -747,21 +757,53 @@ def main():
     StrucPTM_df["__key__"] = StrucPTM_df["PDB_ID"].str.upper() + ":" + StrucPTM_df["chain_ID"].str.upper()
 
     os.makedirs("./align_df_ckpt", exist_ok=True)
+    
+    # 💡 [마이그레이션 핵심] 예전 dict 형태의 메타데이터를 문자열 포맷으로 강제 변환하여 재계산 스킵
     sorted_map = pickle.load(open("./align_df_ckpt/sorted_map.pkl", "rb")) if os.path.exists("./align_df_ckpt/sorted_map.pkl") else {}
+    done_keys = pickle.load(open("./align_df_ckpt/done_keys.pkl", "rb")) if os.path.exists("./align_df_ckpt/done_keys.pkl") else set()
+    meta_by_key = pickle.load(open("./align_df_ckpt/meta_by_key.pkl", "rb")) if os.path.exists("./align_df_ckpt/meta_by_key.pkl") else {}
 
     tasks = []
     for key in tqdm(StrucPTM_df["__key__"].dropna().unique(), desc="Build Align Tasks"):
-        if key in sorted_map or not seq_map.get(key): continue
+        if not seq_map.get(key): continue
+        
         group = StrucPTM_df.loc[StrucPTM_df["__key__"]==key, "PDB_IDs_from_identical_UniProt_Accession_code"].iloc[0]
-        if not group: continue
-        cands = [c.strip() for c in group.split(",") if c.strip() != key and seq_map.get(c.strip())]
-        if cands: tasks.append((key, seq_map[key], [(c, seq_map[c]) for c in cands]))
+        if not group: 
+            done_keys.add(key)
+            meta_by_key[key] = ""
+            continue
+            
+        cands = sorted([c.strip() for c in group.split(",") if c.strip() != key and seq_map.get(c.strip())])
+        cand_str = ",".join(cands)
+        
+        old_meta = meta_by_key.get(key)
+        
+        # 1. 현재 짝꿍과 예전 짝꿍이 완벽히 일치하면 스킵 (정상 캐시 히트)
+        if key in done_keys and old_meta == cand_str:
+            continue
+            
+        # 2. [마이그레이션 방어] 예전 노트북에서 짠 dict 형태의 캐시가 남아있는 경우 -> 캐시 포맷만 문자열(cand_str)로 덮어쓰고 스킵
+        if key in done_keys and isinstance(old_meta, dict):
+            meta_by_key[key] = cand_str
+            continue
+            
+        # 3. 예전과 비교해 짝꿍이 새로 추가되었거나, 아예 처음 보는 key인 경우 -> 계산 큐에 넣음
+        if cands: 
+            tasks.append((key, seq_map[key], [(c, seq_map[c]) for c in cands], cand_str))
+        else:
+            done_keys.add(key)
+            meta_by_key[key] = cand_str
 
     if tasks:
         with mp.Pool(MAX_WORKERS) as pool:
-            for key, res in tqdm(pool.imap_unordered(_worker_align, tasks, chunksize=1), total=len(tasks), desc="Aligning"):
+            for key, res, c_str in tqdm(pool.imap_unordered(_worker_align, tasks, chunksize=1), total=len(tasks), desc="Aligning"):
                 sorted_map[key] = res
+                done_keys.add(key)
+                meta_by_key[key] = c_str
+                
         with open("./align_df_ckpt/sorted_map.pkl", "wb") as f: pickle.dump(sorted_map, f)
+        with open("./align_df_ckpt/done_keys.pkl", "wb") as f: pickle.dump(done_keys, f)
+        with open("./align_df_ckpt/meta_by_key.pkl", "wb") as f: pickle.dump(meta_by_key, f)
 
     StrucPTM_df["scores_filtered"] = StrucPTM_df["__key__"].map(lambda k: ", ".join([f"{pc}|{sc:.4f}" for pc, sc in sorted_map.get(k, [])]) if k in sorted_map else "")
     StrucPTM_df = StrucPTM_df.drop(columns=["__key__"])
@@ -825,6 +867,7 @@ def main():
     finally:
         conn.close()
         print("\n[FINISHED] MySQL connection closed. Pipeline Complete!")
+
 
 if __name__ == "__main__":
     main()
