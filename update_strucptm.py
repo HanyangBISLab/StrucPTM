@@ -119,10 +119,10 @@ PTM_SD_df_path = '/data1/JSG/251106_new_PTM_summary/251218_PTM_SD_df.csv'
 MYSQL_SEQ_CSV = "/var/lib/mysql-files/251107_Final_sequence_df.csv"
 MYSQL_PTM_CSV = "/var/lib/mysql-files/251107_Final_PTM_df.csv"
 
-DB_NAME   = os.getenv("PTM_DB",   "BIS_PTM")
-DB_HOST   = os.getenv("PTM_HOST", "localhost")
-DB_USER   = os.getenv("PTM_USER", "root")
-DB_PASS   = os.getenv("PTM_PASS", "bis4704_29")
+DB_NAME   = os.getenv("PTM_DB",   "")
+DB_HOST   = os.getenv("PTM_HOST", "")
+DB_USER   = os.getenv("PTM_USER", "")
+DB_PASS   = os.getenv("PTM_PASS", "")
 
 # Dictionaries
 three_to_one = {
