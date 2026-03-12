@@ -53,6 +53,8 @@ import urllib.request
 import requests
 import warnings
 import pymysql
+import datetime
+import pytz
 import numpy as np
 import pandas as pd
 import multiprocessing as mp
@@ -87,6 +89,19 @@ except Exception:
     BIO_OK = False
 
 warnings.filterwarnings("ignore")
+
+# =====================================================================
+# [PRE-CHECK] 웹 서비스용 업데이트 날짜 즉시 기록
+# =====================================================================
+try:
+    date_file = "/home/bis/230711_JSG/241125_PTM/250818_webservice/backend/snapshot_date.txt"
+    os.makedirs(os.path.dirname(date_file), exist_ok=True)
+    now_str = datetime.datetime.now(pytz.timezone('Asia/Seoul')).strftime('%Y-%m-%d')
+    with open(date_file, "w") as f:
+        f.write(now_str)
+    print(f"\n[INFO] 웹서비스용 업데이트 날짜({now_str})가 성공적으로 기록되었습니다.")
+except Exception as e:
+    print(f"\n[ERROR] 날짜 기록 중 오류 발생: {e}")
 
 # =====================================================================
 # [CONFIG] 1. GLOBAL CONFIGURATION & DICTIONARIES
