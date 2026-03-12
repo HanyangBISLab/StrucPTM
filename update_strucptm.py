@@ -40,7 +40,7 @@ if current_env != TARGET_ENV and os.environ.get("STRUCPTM_BOOTSTRAPPED") != "1":
         sys.exit(1)
 
 # =====================================================================
-# [START] 본격적인 스크립트 시작 (외부 라이브러리 임포트)
+# [IMPORTS] 외부 라이브러리 임포트
 # =====================================================================
 import re
 import math
@@ -90,25 +90,12 @@ except Exception:
 
 warnings.filterwarnings("ignore")
 
-# =====================================================================
-# [PRE-CHECK] 웹 서비스용 업데이트 날짜 즉시 기록
-# =====================================================================
-try:
-    date_file = "/home/bis/230711_JSG/241125_PTM/250818_webservice/backend/snapshot_date.txt"
-    os.makedirs(os.path.dirname(date_file), exist_ok=True)
-    now_str = datetime.datetime.now(pytz.timezone('Asia/Seoul')).strftime('%Y-%m-%d')
-    with open(date_file, "w") as f:
-        f.write(now_str)
-    print(f"\n[INFO] 웹서비스용 업데이트 날짜({now_str})가 성공적으로 기록되었습니다.")
-except Exception as e:
-    print(f"\n[ERROR] 날짜 기록 중 오류 발생: {e}")
 
 # =====================================================================
-# [CONFIG] 1. GLOBAL CONFIGURATION & DICTIONARIES
+# [GLOBALS] 전역 설정 및 사전 정의 (멀티 프로세싱 접근용)
 # =====================================================================
-MAX_WORKERS = 32  # CPU 32코어 풀가동
+MAX_WORKERS = 32
 
-# 데이터 경로
 data_root = '/data1/JSG/'
 uniprot_root = Path("/data1/JSG/UniProt/")
 mmcif_root = Path("/data1/JSG/mmcifs/")
@@ -121,7 +108,6 @@ pdb_chain_uniprot_csv_path = str(uniprot_root / "pdb_chain_uniprot.csv")
 diff_df_path = "/data1/JSG/251106_new_PTM_summary/PTM_added_atoms.csv"
 ptm_sd_table_path = "/data1/JSG/251106_new_PTM_summary/PTM-SD_correpondence_table.csv"
 
-# Intermediates & Final Output paths
 inter_sequence_df_path = '/data1/JSG/251106_new_PTM_summary/intermediate/251218_sequence_df.csv'
 inter_StrucPTM_df_path = '/data1/JSG/251106_new_PTM_summary/intermediate/251218_StrucPTM_df.csv'
 inter_PTM_SD_df_path = '/data1/JSG/251106_new_PTM_summary/intermediate/251218_PTM_SD_df.csv'
@@ -133,15 +119,10 @@ PTM_SD_df_path = '/data1/JSG/251106_new_PTM_summary/251218_PTM_SD_df.csv'
 MYSQL_SEQ_CSV = "/var/lib/mysql-files/251107_Final_sequence_df.csv"
 MYSQL_PTM_CSV = "/var/lib/mysql-files/251107_Final_PTM_df.csv"
 
-# DB Config
-DB_NAME   = os.getenv("PTM_DB",   "")
-DB_HOST   = os.getenv("PTM_HOST", "")
-DB_USER   = os.getenv("PTM_USER", "")
-DB_PASS   = os.getenv("PTM_PASS", "")
-
-# 디렉터리 생성
-for path in [uniprot_root, mmcif_root, mmcif_chain_root, dssp_root, uniprot_csv_path.parent, Path(inter_sequence_df_path).parent]:
-    path.mkdir(parents=True, exist_ok=True)
+DB_NAME   = os.getenv("PTM_DB",   "BIS_PTM")
+DB_HOST   = os.getenv("PTM_HOST", "localhost")
+DB_USER   = os.getenv("PTM_USER", "root")
+DB_PASS   = os.getenv("PTM_PASS", "bis4704_29")
 
 # Dictionaries
 three_to_one = {
@@ -204,236 +185,68 @@ UNKNOWN_CHAR = 'X'
 
 
 # =====================================================================
-# [PHASE 1] UNIPROT & SIFTS PREP
+# [FUNCTIONS] 멀티 프로세싱을 위한 최상단 함수 정의 모음
 # =====================================================================
-print("\n" + "="*60)
-print(" [PHASE 1] UniProt & SIFTS 데이터 준비 (항상 최신화)")
-print("="*60)
+def get_cb_or_ca_coord(residue):
+    if "CB" in residue: return np.asarray(residue["CB"].get_coord(), dtype=float)
+    if "CA" in residue: return np.asarray(residue["CA"].get_coord(), dtype=float)
+    return None
 
-targets = [
-    ("https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_sprot.dat.gz", uniprot_root / "uniprot_sprot.dat.gz"),
-    ("https://ftp.ebi.ac.uk/pub/databases/msd/sifts/flatfiles/csv/pdb_chain_uniprot.csv.gz", uniprot_root / "pdb_chain_uniprot.csv.gz"),
-    ("https://ftp.ebi.ac.uk/pub/databases/msd/sifts/flatfiles/csv/uniprot_pdb.csv.gz", uniprot_root / "uniprot_pdb.csv.gz"),
-]
+def parse_dssp_to_df_with_ASA(dssp_path: str) -> pd.DataFrame:
+    rows, parse = [], False
+    with open(dssp_path) as f:
+        for l in f:
+            if l.startswith("  #  RESIDUE"): parse = True; continue
+            if not parse or len(l) < 40: continue
+            try: resnum = int(l[5:10].strip())
+            except: continue
+            chain, sec, asa = l[11].strip().upper(), l[16].strip(), l[34:38].strip()
+            rows.append({"chain": chain, "resnum": resnum, "sec_struct": sec, "ASA_dssp": int(asa) if asa.isdigit() else np.nan})
+    return pd.DataFrame(rows)
 
-def download_with_progress(url: str, dest: Path, chunk_size=1024*1024, max_retries=5):
-    for attempt in range(1, max_retries+1):
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req) as resp:
-                total = resp.getheader("Content-Length")
-                total = int(total) if total is not None else None
-                tmp = dest.with_suffix(dest.suffix + ".part")
-                if tmp.exists(): tmp.unlink()
-                with open(tmp, "wb") as f, tqdm(total=total, unit="B", unit_scale=True, unit_divisor=1024, desc=dest.name, dynamic_ncols=True) as bar:
-                    while True:
-                        chunk = resp.read(chunk_size)
-                        if not chunk: break
-                        f.write(chunk)
-                        bar.update(len(chunk))
-                tmp.replace(dest)
-            return True
-        except Exception as e:
-            if attempt == max_retries: return False
-            time.sleep(2 * attempt)
-
-for url, dest in targets:
-    print(f"-> Downloading (Always) {dest.name}...")
-    download_with_progress(url, dest)
-
-gz_list = list(uniprot_root.glob("*.gz"))
-for gz_path in gz_list:
-    dest_path = gz_path.with_suffix("")
-    print(f"-> Extracting (Always) {gz_path.name}...")
-    with gzip.open(gz_path, "rb") as f_in, open(dest_path, "wb") as f_out:
-        shutil.copyfileobj(f_in, f_out)
-
-def parse_uniprot_sprot(uniprot_path: Path) -> pd.DataFrame:
-    def _push_current(rec_list: List[Dict], cur: Dict):
-        if not cur: return
-        cur["Description"] = " ".join(cur.get("Description", [])).strip() or None
-        cur["Organism"] = " ".join(cur.get("Organism", [])).strip().rstrip(".") or None
-        if "Organism_ID" in cur:
-            m_id = re.search(r"NCBI_TaxID=(\d+)", cur["Organism_ID"])
-            cur["Organism_ID"] = m_id.group(1) if m_id else None
-        else: cur["Organism_ID"] = None
-        if "PDB" in cur:
-            seen, uniq = set(), []
-            for x in cur["PDB"]:
-                x_up = x.strip().upper()
-                if re.fullmatch(r"[0-9A-Z]{4}", x_up) and x_up not in seen:
-                    seen.add(x_up); uniq.append(x_up)
-            cur["PDB"] = ", ".join(uniq) if uniq else None
-        else: cur["PDB"] = None
-        cur["amino_acid_sequence"] = cur.get("amino_acid_sequence", None) or None
-        cur["IDR_regions"] = cur.get("IDR_regions", [])
-        acc = cur.get("Accession")
-        if isinstance(acc, list): cur["Accession"] = acc[0] if acc else None
-        rec_list.append({"ID": cur.get("ID"), "Accession": cur.get("Accession"), "Description": cur.get("Description"), "Organism": cur.get("Organism"), "Organism_ID": cur.get("Organism_ID"), "amino_acid_sequence": cur.get("amino_acid_sequence"), "IDR_regions": cur.get("IDR_regions"), "PDB": cur.get("PDB")})
-
-    re_id = re.compile(r"^ID\s+(\S+)"); re_ac = re.compile(r"^AC\s+(.+)"); re_de = re.compile(r"^DE\s+(.+)"); re_os = re.compile(r"^OS\s+(.+)")
-    re_ox = re.compile(r"^OX\s+(.+)"); re_dr_pdb = re.compile(r"^DR\s+PDB;\s*([0-9A-Za-z]{4});"); re_ft_region = re.compile(r"^FT\s+REGION\s+(\d+)\.\.(\d+)\s+(.*)$", re.IGNORECASE)
-
-    with open(uniprot_path, "r", encoding="utf-8", errors="ignore") as f: lines = f.readlines()
-    records, cur, in_seq = [], {}, False
-    for line in tqdm(lines, desc="Parsing UniProt", unit="line", dynamic_ncols=True):
-        line = line.rstrip("\n")
-        if line.startswith("//"): _push_current(records, cur); cur, in_seq = {}, False; continue
-        if line.startswith("SQ "): in_seq, cur["amino_acid_sequence"] = True, ""; continue
-        if in_seq:
-            if line.startswith("  "): cur["amino_acid_sequence"] += re.sub(r"[^A-Za-z]", "", line); continue
-            else: in_seq = False
-        m = re_id.match(line)
-        if m: cur["ID"] = m.group(1).strip(); continue
-        m = re_ac.match(line)
-        if m:
-            parts = [p.strip() for p in m.group(1).strip().split(";") if p.strip()]
-            if parts: cur.setdefault("Accession", []).extend(parts)
-            continue
-        m = re_de.match(line)
-        if m: cur.setdefault("Description", []).append(m.group(1).strip()); continue
-        m = re_os.match(line)
-        if m: cur.setdefault("Organism", []).append(m.group(1).strip()); continue
-        m = re_ox.match(line)
-        if m: cur["Organism_ID"] = m.group(1).strip(); continue
-        m = re_dr_pdb.match(line)
-        if m: cur.setdefault("PDB", []).append(m.group(1).upper()); continue
-        m = re_ft_region.match(line)
-        if m:
-            start, end, desc = m.groups()
-            if "disordered" in desc.lower():
-                try: cur.setdefault("IDR_regions", []).append((int(start), int(end)))
-                except: pass
-            continue
-    if cur: _push_current(records, cur)
-    return pd.DataFrame.from_records(records, columns=["ID", "Accession", "Description", "Organism", "Organism_ID", "amino_acid_sequence", "IDR_regions", "PDB"])
-
-uniprot_dat_path = uniprot_root / "uniprot_sprot.dat"
-
-print("[PROCESS] UniProt DAT 파싱 및 CSV 변환 중 (항상 최신화)...")
-swiss_prot_df = parse_uniprot_sprot(uniprot_dat_path)
-swiss_prot_df = swiss_prot_df.dropna(subset=["amino_acid_sequence"]).dropna()
-swiss_prot_df.to_csv(uniprot_csv_path, index=False)
-print("[SUCCESS] UniProt 파싱 완료")
-
-
-# =====================================================================
-# [PHASE 2] PDB DOWNLOAD & FLATTEN
-# =====================================================================
-print("\n" + "="*60)
-print(" [PHASE 2] PDB(mmCIF) 동기화 및 Flatten")
-print("="*60)
-
-PDB_API_URL = "https://data.rcsb.org/rest/v1/holdings/current/entry_ids"
-REQ_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; mmcif-downloader/3.0-rcsb-direct)"}
-
-def download_and_extract(pdb_id: str):
-    url = f"https://files.rcsb.org/download/{pdb_id}.cif.gz"
-    target_dir = mmcif_divided_root / "mmCIF" / pdb_id[1:3]
-    target_dir.mkdir(parents=True, exist_ok=True)
-    local_gz, local_cif, tmp_path = target_dir / f"{pdb_id}.cif.gz", target_dir / f"{pdb_id}.cif", target_dir / f"{pdb_id}.part"
-    for attempt in range(1, 4):
-        try:
-            with requests.get(url, headers=REQ_HEADERS, stream=True, timeout=30) as r:
-                if r.status_code == 404: return (pdb_id, False, "HTTP 404")
-                r.raise_for_status()
-                with open(tmp_path, "wb") as f:
-                    for chunk in r.iter_content(chunk_size=1048576):
-                        if chunk: f.write(chunk)
-                tmp_path.replace(local_gz)
-                with gzip.open(local_gz, "rb") as gz_in, open(local_cif, "wb") as f_out: shutil.copyfileobj(gz_in, f_out)
-                local_gz.unlink()
-                if local_cif.stat().st_size == 0: local_cif.unlink(); raise ValueError("Empty extracted file")
-                return (pdb_id, True, "Success")
-        except Exception as e: time.sleep(1); last_err = str(e)
-    for p in [tmp_path, local_gz, local_cif]:
-        if p.exists():
-            try: p.unlink()
-            except: pass
-    return (pdb_id, False, last_err)
-
-all_ids = set(pid.lower() for pid in requests.get(PDB_API_URL, headers=REQ_HEADERS, timeout=30).json())
-local_ids = {p.stem.lower() for p in mmcif_root.rglob("*.cif") if p.stat().st_size > 0}
-missing_ids = list(all_ids - local_ids)
-
-print(f" - 전체 대상: {len(all_ids):,}, 로컬 보유: {len(local_ids):,}, 신규 대상: {len(missing_ids):,}")
-if missing_ids:
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-        list(tqdm(ex.map(download_and_extract, missing_ids), total=len(missing_ids), desc="Downloading mmCIF"))
-
-files_to_move = list(mmcif_divided_root.rglob("*.cif"))
-if files_to_move:
-    for src in tqdm(files_to_move, desc="Flatten move", unit="file", dynamic_ncols=True):
-        dst = mmcif_root / src.name
-        if dst.exists():
-            if dst.stat().st_size == src.stat().st_size and abs(dst.stat().st_mtime - src.stat().st_mtime) < 2.0: continue
-            tmp = mmcif_root / (src.name + ".incoming")
-            if tmp.exists(): tmp.unlink()
-            shutil.move(str(src), str(tmp)); tmp.replace(dst)
-        else:
-            shutil.move(str(src), str(dst))
-
-
-# =====================================================================
-# [PHASE 3] CHAIN SPLIT & DSSP
-# =====================================================================
-print("\n" + "="*60)
-print(" [PHASE 3] 체인 분할 및 DSSP 2차 구조 계산")
-print("="*60)
-
-class ChainSelect(Select):
-    def __init__(self, chain_id: str): super().__init__(); self.chain_id = str(chain_id)
-    def accept_chain(self, chain): return str(chain.id) == self.chain_id
-
-def split_mmcif_by_chain(file_path: Path):
-    structure_id = file_path.stem
-    if list(mmcif_chain_root.glob(f"{structure_id}:*.cif")): return
+def global_asm_worker(args):
+    pdb, ptm_reqs, mmcif_dir = args
+    path = os.path.join(mmcif_dir, pdb.lower() + ".cif")
     try:
-        parser = FastMMCIFParser(QUIET=True) if FastMMCIFParser else MMCIFParser(QUIET=True)
-        st = parser.get_structure(structure_id, str(file_path))
-        first_model = next(iter(st), None)
-        if not first_model: return
-        for chain in first_model:
-            cid = str(chain.id)
-            out_path = mmcif_chain_root / f"{structure_id}:{cid}.cif"
-            if out_path.exists() and out_path.stat().st_size > 0: continue
-            io = PDBIO(); io.set_structure(st); io.save(str(out_path), select=ChainSelect(cid))
-    except: pass
+        parser = FastMMCIFParser(QUIET=True) if 'FastMMCIFParser' in globals() and FastMMCIFParser else MMCIFParser(QUIET=True)
+        model = next(parser.get_structure(pdb, path).get_models())
+    except Exception:
+        return pdb, "Unknown", {}
+    
+    chain_data = {}
+    for chain in model:
+        coords, resnums = [], []
+        for res in chain:
+            c = get_cb_or_ca_coord(res)
+            if c is not None: 
+                coords.append(c)
+                resnums.append(res.id[1])
+        if coords: 
+            chain_data[str(chain.id).strip().upper()] = (np.asarray(resnums, dtype=int), np.asarray(coords, dtype=float))
+    
+    asm = "Multimer" if len(chain_data) >= 2 else ("Monomer" if len(chain_data) == 1 else "Unknown")
+    loc = {}
+    for (ch, rn) in ptm_reqs:
+        if ch not in chain_data or len(np.where(chain_data[ch][0] == rn)[0]) == 0: 
+            loc[(ch, rn)] = "Unknown"
+            continue
+        ptm_coord = chain_data[ch][1][int(np.where(chain_data[ch][0] == rn)[0][0])]
+        loc[(ch, rn)] = "Interface" if any(np.any(np.linalg.norm(ocoords - ptm_coord, axis=1) < 8.0) for och, (_, ocoords) in chain_data.items() if och != ch) else "Non-interface"
+    return pdb, asm, loc
 
-def run_dssp_for_mmcif(mmcif_path: Path):
-    pdb_id = mmcif_path.stem
-    dssp_path = dssp_root / f"{pdb_id}.dssp"
-    if dssp_path.exists() and dssp_path.stat().st_size > 0: return "skip"
-    try:
-        subprocess.run(["mkdssp", "-i", str(mmcif_path), "-o", str(dssp_path)], check=True, capture_output=True, text=True, timeout=120)
-        return "ok"
-    except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
-        if dssp_path.exists():
-            try: dssp_path.unlink()
-            except: pass
-        return "error"
-    except Exception: return "error"
-
-all_mmcifs = list(mmcif_root.glob("*.cif"))
-done_struct_ids = {p.stem.split(":", 1)[0] for p in mmcif_chain_root.glob("*.cif") if ":" in p.name and p.stat().st_size > 0}
-queue_chains = [p for p in all_mmcifs if p.stem not in done_struct_ids]
-if queue_chains:
-    with ProcessPoolExecutor(max_workers=MAX_WORKERS) as ex:
-        list(tqdm(ex.map(split_mmcif_by_chain, queue_chains), total=len(queue_chains), desc="Split Chains"))
-
-done_dssp_ids = {p.stem for p in dssp_root.glob("*.dssp") if p.stat().st_size > 0}
-queue_dssps = [p for p in all_mmcifs if p.stem not in done_dssp_ids]
-if queue_dssps:
-    with ProcessPoolExecutor(max_workers=MAX_WORKERS) as ex:
-        list(tqdm(ex.map(run_dssp_for_mmcif, queue_dssps, chunksize=100), total=len(queue_dssps), desc="mkdssp"))
-
-
-# =====================================================================
-# [PHASE 4] FEATURE EXTRACTION (One-Pass)
-# =====================================================================
-print("\n" + "="*60)
-print(" [PHASE 4] Feature Extraction (PTM, Sequence, Structure)")
-print("="*60)
+def global_dssp_worker(args):
+    pdb, df_sub, dssp_dir, max_asa_dict = args
+    dssp_file = os.path.join(dssp_dir, pdb.lower() + ".dssp")
+    if not os.path.exists(dssp_file): return None
+    dssp = parse_dssp_to_df_with_ASA(dssp_file)
+    if dssp.empty: return None
+    merged = pd.merge(df_sub, dssp, left_on=["pdb_chain", "pdb_pos"], right_on=["chain", "resnum"], how="left")
+    asa = pd.to_numeric(merged["ASA_dssp"], errors="coerce")
+    denom = merged["_base_aa1"].astype(str).map(max_asa_dict).astype(float)
+    return merged[["orig_idx"]].assign(
+        sec_struct=merged["sec_struct"].fillna("C").str.strip().replace({"": "C"}), 
+        RSA_dssp=(asa / denom).where(~asa.isna(), 1.0).clip(upper=1.0).values
+    )
 
 def _to_list(x): return x if isinstance(x, list) else ([x] if x is not None else [])
 def _safe_int(x) -> Optional[int]:
@@ -444,7 +257,7 @@ def _norm_comp(comp: Any) -> str: return str(comp).strip().upper()
 
 def extract_from_mmcif_one_pass(mmcif_file: str):
     seq_rows, modres_rows, resatom_rows, glyco_rows = [], [], [], []
-    pdb_path = os.path.join(mmcif_root, mmcif_file)
+    pdb_path = os.path.join(str(mmcif_root), mmcif_file)
     pdb_id = mmcif_file[:4].upper()
     try:
         cif_dict = MMCIF2Dict(pdb_path)
@@ -509,23 +322,9 @@ def extract_from_mmcif_one_pass(mmcif_file: str):
     except Exception: pass
     return seq_rows, modres_rows, resatom_rows, glyco_rows
 
-# Load or init intermediates
-if os.path.exists(inter_sequence_df_path): inter_sequence_df = pd.read_csv(inter_sequence_df_path)
-else: inter_sequence_df = pd.DataFrame(columns=["PDB_ID", "chain_ID", "1_letter_expressed_sequence"])
-
-if os.path.exists(inter_PTM_SD_df_path): inter_PTM_SD_df = pd.read_csv(inter_PTM_SD_df_path)
-else: inter_PTM_SD_df = pd.DataFrame()
-
-if os.path.exists(inter_StrucPTM_df_path): inter_StrucPTM_df = pd.read_csv(inter_StrucPTM_df_path)
-else: inter_StrucPTM_df = pd.DataFrame()
-
-seq_id_set = set(inter_sequence_df['PDB_ID'].dropna().astype(str).str.strip().str.lower().unique())
-mmcifs = os.listdir(mmcif_root)
-target_cifs = [p for p in mmcifs if os.path.splitext(p)[0].strip().lower() not in seq_id_set and p.endswith(".cif")]
-print(f"Target structures to process: {len(target_cifs)} / {len(mmcifs)}")
-
 def is_polymer_token(tok: str) -> bool: return tok in AA3_TO_AA1 or tok in MOD_TO_AA1
 def map_mod_to_aa1(tok: str, ch: str) -> str: return MOD_TO_AA1[tok] if ch == UNKNOWN_CHAR and tok in MOD_TO_AA1 else ch
+
 def drop_tail_and_map_general(row):
     val1, val3 = row['sequence_1'], row['sequence_3']
     if pd.isna(val1) or pd.isna(val3): return val1
@@ -546,6 +345,7 @@ def drop_tail_and_map_general(row):
         else: out.append(map_mod_to_aa1(tok, ch))
     if len(letters) > n: out.extend(letters[n:])
     return ''.join(out)
+
 def parse_atom_types(x):
     if isinstance(x, list): return [str(t).strip().upper() for t in x if str(t).strip()]
     if not x or str(x).lower() == 'nan': return []
@@ -555,253 +355,474 @@ def parse_atom_types(x):
     except: pass
     return [tok.strip().strip("'").strip('"').upper() for tok in str(x).strip("[]").split(",") if tok.strip()]
 
-def get_cb_or_ca_coord(residue):
-    if "CB" in residue: return np.asarray(residue["CB"].get_coord(), dtype=float)
-    if "CA" in residue: return np.asarray(residue["CA"].get_coord(), dtype=float)
-    return None
+def download_and_extract(pdb_id: str):
+    url = f"https://files.rcsb.org/download/{pdb_id}.cif.gz"
+    target_dir = mmcif_divided_root / "mmCIF" / pdb_id[1:3]
+    target_dir.mkdir(parents=True, exist_ok=True)
+    local_gz, local_cif, tmp_path = target_dir / f"{pdb_id}.cif.gz", target_dir / f"{pdb_id}.cif", target_dir / f"{pdb_id}.part"
+    for attempt in range(1, 4):
+        try:
+            with requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, stream=True, timeout=30) as r:
+                if r.status_code == 404: return (pdb_id, False, "HTTP 404")
+                r.raise_for_status()
+                with open(tmp_path, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=1048576):
+                        if chunk: f.write(chunk)
+                tmp_path.replace(local_gz)
+                with gzip.open(local_gz, "rb") as gz_in, open(local_cif, "wb") as f_out: shutil.copyfileobj(gz_in, f_out)
+                local_gz.unlink()
+                if local_cif.stat().st_size == 0: local_cif.unlink(); raise ValueError("Empty extracted file")
+                return (pdb_id, True, "Success")
+        except Exception as e: time.sleep(1); last_err = str(e)
+    for p in [tmp_path, local_gz, local_cif]:
+        if p.exists():
+            try: p.unlink()
+            except: pass
+    return (pdb_id, False, last_err)
 
-def parse_dssp_to_df_with_ASA(dssp_path: str) -> pd.DataFrame:
-    rows, parse = [], False
-    with open(dssp_path) as f:
-        for l in f:
-            if l.startswith("  #  RESIDUE"): parse = True; continue
-            if not parse or len(l) < 40: continue
-            try: resnum = int(l[5:10].strip())
-            except: continue
-            chain, sec, asa = l[11].strip().upper(), l[16].strip(), l[34:38].strip()
-            rows.append({"chain": chain, "resnum": resnum, "sec_struct": sec, "ASA_dssp": int(asa) if asa.isdigit() else np.nan})
-    return pd.DataFrame(rows)
+class ChainSelect(Select):
+    def __init__(self, chain_id: str): super().__init__(); self.chain_id = str(chain_id)
+    def accept_chain(self, chain): return str(chain.id) == self.chain_id
 
+def split_mmcif_by_chain(file_path: Path):
+    structure_id = file_path.stem
+    if list(mmcif_chain_root.glob(f"{structure_id}:*.cif")): return
+    try:
+        parser = FastMMCIFParser(QUIET=True) if 'FastMMCIFParser' in globals() and FastMMCIFParser else MMCIFParser(QUIET=True)
+        st = parser.get_structure(structure_id, str(file_path))
+        first_model = next(iter(st), None)
+        if not first_model: return
+        for chain in first_model:
+            cid = str(chain.id)
+            out_path = mmcif_chain_root / f"{structure_id}:{cid}.cif"
+            if out_path.exists() and out_path.stat().st_size > 0: continue
+            io = PDBIO(); io.set_structure(st); io.save(str(out_path), select=ChainSelect(cid))
+    except: pass
 
-if target_cifs:
-    all_seq, all_modres, all_resatoms, all_glyco = [], [], [], []
-    with ProcessPoolExecutor(max_workers=MAX_WORKERS) as ex:
-        for sq, md, ra, gl in tqdm(ex.map(extract_from_mmcif_one_pass, target_cifs), total=len(target_cifs), desc="Extract Features"):
-            all_seq.extend(sq); all_modres.extend(md); all_resatoms.extend(ra); all_glyco.extend(gl)
-
-    # 1) Sequence Data
-    new_seq_df = pd.DataFrame(all_seq)
-    if not new_seq_df.empty:
-        pat = r'(^|-)(?:' + '|'.join(sorted(map(re.escape, set(AA3_TO_AA1.keys()) | set(MOD_TO_AA1.keys()) | NONRES_TOKENS))) + r')(-|$)'
-        mask = new_seq_df['sequence_3'].str.contains(pat, na=False)
-        new_seq_df.loc[mask, 'sequence_1'] = new_seq_df.loc[mask].apply(drop_tail_and_map_general, axis=1)
-        new_seq_df = new_seq_df.rename(columns={"pdb_id": "PDB_ID", "pdb_chain": "chain_ID", "sequence_1": "1_letter_expressed_sequence"})
-    
-    # 2) PTM SD Data
-    new_ptm_sd = pd.DataFrame(all_modres)
-    if not new_ptm_sd.empty:
-        new_ptm_sd = new_ptm_sd.dropna(subset=["pdb_id", "pdb_chain", "pdb_pos", "pdb_modres", "pdb_modres_details"])
-        new_ptm_sd = new_ptm_sd[~((new_ptm_sd["pdb_modres"].str.upper() == "MSE") | (new_ptm_sd["pdb_modres_details"].str.upper().str.strip() == "SELENOMETHIONINE"))]
-        new_ptm_sd["pdb_pos"] = pd.to_numeric(new_ptm_sd["pdb_pos"], errors="coerce").astype("Int64")
-        new_ptm_sd = new_ptm_sd.dropna(subset=["pdb_pos"])
-        ptm_sd_table = pd.read_csv(ptm_sd_table_path)
-        mod_to_ann = dict(zip(ptm_sd_table["MODRES comment"].str.strip(), ptm_sd_table["PTM-SD annotation"].str.strip().replace({"O-linked Glycosylation": "Glycosylation"})))
-        new_ptm_sd["PTM_SD_annotation"] = new_ptm_sd["pdb_modres_details"].map(mod_to_ann).fillna("Unknown")
-
-    # 3) Structural PTM Processing
-    resatoms_df = pd.DataFrame(all_resatoms)
-    glyco_df = pd.DataFrame(all_glyco)
-    diff_df = pd.read_csv(diff_df_path)
-    map_df = pd.read_csv(pdb_chain_uniprot_csv_path, comment="#")[["PDB", "CHAIN", "SP_PRIMARY"]].dropna()
-    map_df["pdb_id_chain"] = map_df["PDB"].str.upper() + ":" + map_df["CHAIN"].str.upper()
-    chain_to_uniprot = map_df.set_index("pdb_id_chain")["SP_PRIMARY"].to_dict()
-
-    if not resatoms_df.empty:
-        resatoms_df = resatoms_df[resatoms_df["pdb_restype"].str.upper() != "MSE"].copy()
-        resatoms_df["atom_types"] = resatoms_df["atom_types"].apply(parse_atom_types)
-        ptm_to_added_atoms = {r["PTM Residue"].strip().upper(): set([a.strip().upper() for a in r["Common Added Atoms"].split(",") if a.strip()]) for _, r in diff_df.dropna(subset=["Common Added Atoms"]).iterrows()}
-        
-        resatoms_df["Updated_annotation"] = np.nan
-        valid_ptm = set(ptm_to_added_atoms.keys()) & set(PTM_rescode_to_annotation.keys()) & set(resatoms_df["pdb_restype"].unique())
-        for ptm_code in valid_ptm:
-            mask_ptm = (resatoms_df["pdb_restype"] == ptm_code)
-            ok_mask = resatoms_df.loc[mask_ptm, "atom_types"].apply(lambda xs: ptm_to_added_atoms[ptm_code].issubset(set(xs)))
-            resatoms_df.loc[resatoms_df.loc[mask_ptm].index[ok_mask], "Updated_annotation"] = PTM_rescode_to_annotation[ptm_code]
-        
-        non_gly = resatoms_df[resatoms_df["Updated_annotation"].notna()].copy()
-        non_gly["pdb_id_chain"] = non_gly["pdb_id"] + ":" + non_gly["pdb_chain"]
-        non_gly = non_gly.rename(columns={"Updated_annotation": "annotation"})[["pdb_id_chain", "pdb_pos", "pdb_restype", "annotation"]]
-        
-        out = non_gly
-        if not glyco_df.empty:
-            glyco_df["pdb_id_chain"] = glyco_df["pdb_id"] + ":" + glyco_df["pdb_chain"]
-            glyco_df["annotation"] = "Glycosylation"
-            out = pd.concat([non_gly, glyco_df[["pdb_id_chain", "pdb_pos", "pdb_restype", "annotation"]]], ignore_index=True)
-        
-        out["pdb_pos"] = pd.to_numeric(out["pdb_pos"], errors="coerce").astype("Int64")
-        out = out.dropna(subset=["pdb_pos"]).drop_duplicates()
-        out["pdb_id"] = out["pdb_id_chain"].astype(str).str[:4]
-        out["pdb_chain"] = out["pdb_id_chain"].astype(str).str[5:]
-        out["UniProt_Accession_code"] = out["pdb_id_chain"].map(chain_to_uniprot)
-        out = out.merge(swiss_prot_df[["Accession", "Organism"]].drop_duplicates(), left_on="UniProt_Accession_code", right_on="Accession", how="left").drop(columns=["Accession"])
-        out["base_residue_name"] = out["pdb_restype"].str.upper().map(lambda x: ptm_to_canonical_3code.get(x, x)).map(lambda x: THREE_TO_FULLNAME.get(x, x))
-
-        # Assembly / Interface
-        out["Assembly_type"], out["Location"] = "Unknown", "Unknown"
-        ptm_map = {}
-        for idx, r in out.iterrows(): ptm_map.setdefault(r["pdb_id"], {}).setdefault((r["pdb_chain"], int(r["pdb_pos"])), []).append(idx)
-        
-        def asm_worker(pdb):
-            path = os.path.join(mmcif_root, pdb.lower() + ".cif")
-            try: model = next(MMCIFParser(QUIET=True).get_structure(pdb, path).get_models())
-            except: return pdb, "Unknown", {}
-            chain_data = {}
-            for chain in model:
-                coords, resnums = [], []
-                for res in chain:
-                    c = get_cb_or_ca_coord(res)
-                    if c is not None: coords.append(c); resnums.append(res.id[1])
-                if coords: chain_data[str(chain.id).strip().upper()] = (np.asarray(resnums, dtype=int), np.asarray(coords, dtype=float))
-            asm = "Multimer" if len(chain_data) >= 2 else ("Monomer" if len(chain_data) == 1 else "Unknown")
-            loc = {}
-            for (ch, rn) in ptm_map.get(pdb, {}).keys():
-                if ch not in chain_data or len(np.where(chain_data[ch][0] == rn)[0]) == 0: loc[(ch, rn)] = "Unknown"; continue
-                ptm_coord = chain_data[ch][1][int(np.where(chain_data[ch][0] == rn)[0][0])]
-                loc[(ch, rn)] = "Interface" if any(np.any(np.linalg.norm(ocoords - ptm_coord, axis=1) < 8.0) for och, (_, ocoords) in chain_data.items() if och != ch) else "Non-interface"
-            return pdb, asm, loc
-
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as exe:
-            for pdb, asm, locs in tqdm(exe.map(asm_worker, ptm_map.keys()), total=len(ptm_map), desc="Annotate Assembly"):
-                for (ch, rn), idxs in ptm_map[pdb].items():
-                    for idx in idxs: out.at[idx, "Assembly_type"] = asm; out.at[idx, "Location"] = locs.get((ch, rn), "Unknown")
-
-        # DSSP
-        out["Secondary_structure"], out["RSA"], out["_base_aa1"], out["orig_idx"] = np.nan, np.nan, out["base_residue_name"].map(FULLNAME_TO_1), out.index
-        def dssp_worker(pdb):
-            dssp_file = os.path.join(dssp_root, pdb.lower() + ".dssp")
-            if not os.path.exists(dssp_file): return None
-            dssp = parse_dssp_to_df_with_ASA(dssp_file)
-            if dssp.empty: return None
-            merged = pd.merge(out[out["pdb_id"]==pdb], dssp, left_on=["pdb_chain", "pdb_pos"], right_on=["chain", "resnum"], how="left")
-            asa, denom = pd.to_numeric(merged["ASA_dssp"], errors="coerce"), merged["_base_aa1"].astype(str).map(max_ASA).astype(float)
-            return merged[["orig_idx"]].assign(sec_struct=merged["sec_struct"].fillna("C").str.strip().replace({"": "C"}), RSA_dssp=(asa / denom).where(~asa.isna(), 1.0).clip(upper=1.0).values)
-
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as exe:
-            updates = [r for r in tqdm(exe.map(dssp_worker, out["pdb_id"].unique()), total=out["pdb_id"].nunique(), desc="Annotate DSSP") if r is not None]
-        if updates:
-            u = pd.concat(updates, ignore_index=True)
-            out.loc[u["orig_idx"], "Secondary_structure"] = u["sec_struct"].values
-            out.loc[u["orig_idx"], "RSA"] = u["RSA_dssp"].values
-        
-        out = out.rename(columns={"pdb_id": "PDB_ID", "pdb_chain": "chain_ID", "pdb_pos": "residue_number", "pdb_restype": "3_letter_residue_code", "annotation": "PTM_type_annotation"}).drop(columns=["_base_aa1", "orig_idx"], errors="ignore")
-        new_struc_df = out
-    else:
-        new_struc_df = pd.DataFrame()
-        
-    # Update Intermediates
-    sequence_df = pd.concat([new_seq_df, inter_sequence_df], ignore_index=True)
-    sequence_df = sequence_df[sequence_df["1_letter_expressed_sequence"].notna() & (sequence_df["1_letter_expressed_sequence"].str.strip() != "")]
-    sequence_df = sequence_df.assign(_len=sequence_df["1_letter_expressed_sequence"].str.len()).sort_values("_len", ascending=False).drop_duplicates(["PDB_ID", "chain_ID"]).drop(columns="_len").reset_index(drop=True)
-    
-    PTM_SD_df = pd.concat([new_ptm_sd, inter_PTM_SD_df], ignore_index=True).drop_duplicates().reset_index(drop=True)
-    StrucPTM_df = pd.concat([new_struc_df, inter_StrucPTM_df], ignore_index=True).drop_duplicates().reset_index(drop=True)
-    
-else:
-    print("[INFO] No new structures to process. Using intermediates directly.")
-    sequence_df = inter_sequence_df
-    PTM_SD_df = inter_PTM_SD_df
-    StrucPTM_df = inter_StrucPTM_df
-
-
-# =====================================================================
-# [PHASE 5] ALIGNMENT & HOMOLOG GROUPING
-# =====================================================================
-print("\n" + "="*60)
-print(" [PHASE 5] Alignment & Homolog Grouping")
-print("="*60)
-
-map_df = pd.read_csv(pdb_chain_uniprot_csv_path, comment="#")[["PDB", "CHAIN", "SP_PRIMARY"]].dropna()
-map_df["pdb_id_chain"] = map_df["PDB"].str.upper() + ":" + map_df["CHAIN"].str.upper()
-u_dict = map_df.dropna(subset=["SP_PRIMARY"]).groupby("SP_PRIMARY")["pdb_id_chain"].apply(lambda s: sorted(set(s.astype(str)))).to_dict()
-
-StrucPTM_df["PDB_IDs_from_identical_UniProt_Accession_code"] = StrucPTM_df["UniProt_Accession_code"].map(u_dict).apply(lambda x: ", ".join(x) if isinstance(x, list) else "")
-
-seq_map = (sequence_df["PDB_ID"].str.upper() + ":" + sequence_df["chain_ID"].str.upper()).to_frame(name="__key__").assign(__seq__=sequence_df["1_letter_expressed_sequence"]).set_index("__key__")["__seq__"].to_dict()
-StrucPTM_df["__key__"] = StrucPTM_df["PDB_ID"].str.upper() + ":" + StrucPTM_df["chain_ID"].str.upper()
-
-os.makedirs("./align_df_ckpt", exist_ok=True)
-sorted_map = pickle.load(open("./align_df_ckpt/sorted_map.pkl", "rb")) if os.path.exists("./align_df_ckpt/sorted_map.pkl") else {}
+def run_dssp_for_mmcif(mmcif_path: Path):
+    pdb_id = mmcif_path.stem
+    dssp_path = dssp_root / f"{pdb_id}.dssp"
+    if dssp_path.exists() and dssp_path.stat().st_size > 0: return "skip"
+    try:
+        subprocess.run(["mkdssp", "-i", str(mmcif_path), "-o", str(dssp_path)], check=True, capture_output=True, text=True, timeout=120)
+        return "ok"
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
+        if dssp_path.exists():
+            try: dssp_path.unlink()
+            except: pass
+        return "error"
+    except Exception: return "error"
 
 def _worker_align(task):
     key, qseq, cand_pairs = task
     res = [(ck, sum(1 for i in range(min(len(qseq), len(cs))) if qseq[i]==cs[i])/max(len(qseq),len(cs)) if not BIO_OK else (lambda a,b: sum(1 for i in range(len(a)) if a[i]==b[i] and a[i]!="-")/len(a))(*pairwise2.align.globalms(qseq,cs,1,-1,-5,-1,one_alignment_only=True)[0][:2])) for ck, cs in cand_pairs if cs]
     return key, sorted([(c, sc) for c, sc in res if sc >= 0.8], key=lambda x: x[1], reverse=True)
 
-tasks = []
-for key in tqdm(StrucPTM_df["__key__"].dropna().unique(), desc="Build Align Tasks"):
-    if key in sorted_map or not seq_map.get(key): continue
-    group = StrucPTM_df.loc[StrucPTM_df["__key__"]==key, "PDB_IDs_from_identical_UniProt_Accession_code"].iloc[0]
-    if not group: continue
-    cands = [c.strip() for c in group.split(",") if c.strip() != key and seq_map.get(c.strip())]
-    if cands: tasks.append((key, seq_map[key], [(c, seq_map[c]) for c in cands]))
-
-if tasks:
-    with mp.Pool(MAX_WORKERS) as pool:
-        for key, res in tqdm(pool.imap_unordered(_worker_align, tasks, chunksize=1), total=len(tasks), desc="Aligning"):
-            sorted_map[key] = res
-    with open("./align_df_ckpt/sorted_map.pkl", "wb") as f: pickle.dump(sorted_map, f)
-
-StrucPTM_df["scores_filtered"] = StrucPTM_df["__key__"].map(lambda k: ", ".join([f"{pc}|{sc:.4f}" for pc, sc in sorted_map.get(k, [])]) if k in sorted_map else "")
-StrucPTM_df = StrucPTM_df.drop(columns=["__key__"])
-if "RSA" in StrucPTM_df.columns:
-    StrucPTM_df["RSA"] = StrucPTM_df["RSA"].clip(upper=1.0)
-
-# Save Files
-sequence_df.to_csv(inter_sequence_df_path, index=False)
-sequence_df.to_csv(sequence_df_path, index=False)
-sequence_df.to_csv(MYSQL_SEQ_CSV, index=False)  # MySQL Load용 백업
-
-PTM_SD_df.to_csv(inter_PTM_SD_df_path, index=False)
-PTM_SD_df.to_csv(PTM_SD_df_path, index=False)
-
-StrucPTM_df.to_csv(inter_StrucPTM_df_path, index=False)
-StrucPTM_df.to_csv(StrucPTM_df_path, index=False)
-StrucPTM_df.to_csv(MYSQL_PTM_CSV, index=False)  # MySQL Load용 백업
-
 
 # =====================================================================
-# [PHASE 6] MYSQL ZERO-DOWNTIME INSERTION
+# [MAIN] 전체 파이프라인 실행 로직
 # =====================================================================
-print("\n" + "="*60)
-print(" [PHASE 6] MySQL Zero-Downtime Insertion")
-print("="*60)
+def main():
+    # 디렉터리 생성
+    for path in [uniprot_root, mmcif_root, mmcif_chain_root, dssp_root, uniprot_csv_path.parent, Path(inter_sequence_df_path).parent]:
+        path.mkdir(parents=True, exist_ok=True)
 
-def norm_str(v): return None if pd.isna(v) or not str(v).strip() else str(v).strip()
-def norm_int(v): return None if pd.isna(v) or not str(v).strip() else int(float(str(v).strip()))
-def norm_float(v): return None if pd.isna(v) or not str(v).strip() else float(str(v).strip())
+    # -----------------------------------------------------------------
+    # [PRE-CHECK] 웹 서비스용 업데이트 날짜 즉시 기록
+    # -----------------------------------------------------------------
+    try:
+        date_file = "/home/bis/230711_JSG/241125_PTM/250818_webservice/backend/snapshot_date.txt"
+        os.makedirs(os.path.dirname(date_file), exist_ok=True)
+        now_str = datetime.datetime.now(pytz.timezone('Asia/Seoul')).strftime('%Y-%m-%d')
+        with open(date_file, "w") as f:
+            f.write(now_str)
+        print(f"\n[INFO] 웹서비스용 업데이트 날짜({now_str})가 성공적으로 기록되었습니다.")
+    except Exception as e:
+        print(f"\n[ERROR] 날짜 기록 중 오류 발생: {e}")
 
-conn = pymysql.connect(host=DB_HOST, user=DB_USER, password=DB_PASS, db=DB_NAME, charset="utf8mb4", autocommit=False)
-try:
-    with conn.cursor() as cur:
-        # Sequence DB
-        print("[DB] TRUNCATE TABLE sequence_data_ext ...")
-        cur.execute("TRUNCATE TABLE sequence_data_ext;")
-        sql_seq = "INSERT INTO sequence_data_ext (pdb_id, chain_id, seq_aa1) VALUES (%s, %s, %s)"
-        tot = 0
-        for chunk in pd.read_csv(MYSQL_SEQ_CSV, chunksize=50000):
-            batch = [(norm_str(r.get("PDB_ID")), norm_str(r.get("chain_ID")), norm_str(r.get("1_letter_expressed_sequence"))) for _, r in chunk.iterrows() if norm_str(r.get("PDB_ID"))]
-            if batch: cur.executemany(sql_seq, batch); tot += len(batch)
-        conn.commit()
-        print(f"[SUCCESS] Sequence Inserted: {tot:,}")
+    # -----------------------------------------------------------------
+    # [PHASE 1] UNIPROT & SIFTS PREP
+    # -----------------------------------------------------------------
+    print("\n" + "="*60)
+    print(" [PHASE 1] UniProt & SIFTS 데이터 준비 (항상 최신화)")
+    print("="*60)
 
-        # PTM DB
-        print("[DB] TRUNCATE TABLE ptm_data_ext ...")
-        cur.execute("TRUNCATE TABLE ptm_data_ext;")
-        sql_ptm = "INSERT INTO ptm_data_ext (pdb_id, chain_id, uniprot_acc, organism, residue_no, res3, residue_name, ptm_type, assembly_type, location, secondary_structure, rsa, related_pdb_chains_from_SIFTS) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
-        tot = 0
-        for chunk in pd.read_csv(MYSQL_PTM_CSV, chunksize=50000):
-            batch = []
-            for _, r in chunk.iterrows():
-                pid = norm_str(r.get("PDB_ID"))
-                if not pid: continue
-                batch.append((pid[:4], norm_str(r.get("chain_ID")), norm_str(r.get("UniProt_Accession_code")), norm_str(r.get("Organism")), norm_int(r.get("residue_number")), norm_str(r.get("3_letter_residue_code"))[:3] if norm_str(r.get("3_letter_residue_code")) else None, norm_str(r.get("base_residue_name")), norm_str(r.get("PTM_type_annotation")), norm_str(r.get("Assembly_type")), norm_str(r.get("Location")), norm_str(r.get("Secondary_structure"))[:1] if norm_str(r.get("Secondary_structure")) else None, norm_float(r.get("RSA")), norm_str(r.get("scores_filtered"))))
-            if batch: cur.executemany(sql_ptm, batch); tot += len(batch)
-        conn.commit()
-        print(f"[SUCCESS] PTM Inserted: {tot:,}")
+    targets = [
+        ("https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/complete/uniprot_sprot.dat.gz", uniprot_root / "uniprot_sprot.dat.gz"),
+        ("https://ftp.ebi.ac.uk/pub/databases/msd/sifts/flatfiles/csv/pdb_chain_uniprot.csv.gz", uniprot_root / "pdb_chain_uniprot.csv.gz"),
+        ("https://ftp.ebi.ac.uk/pub/databases/msd/sifts/flatfiles/csv/uniprot_pdb.csv.gz", uniprot_root / "uniprot_pdb.csv.gz"),
+    ]
+
+    def download_with_progress(url: str, dest: Path, chunk_size=1024*1024, max_retries=5):
+        for attempt in range(1, max_retries+1):
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req) as resp:
+                    total = resp.getheader("Content-Length")
+                    total = int(total) if total is not None else None
+                    tmp = dest.with_suffix(dest.suffix + ".part")
+                    if tmp.exists(): tmp.unlink()
+                    with open(tmp, "wb") as f, tqdm(total=total, unit="B", unit_scale=True, unit_divisor=1024, desc=dest.name, dynamic_ncols=True) as bar:
+                        while True:
+                            chunk = resp.read(chunk_size)
+                            if not chunk: break
+                            f.write(chunk)
+                            bar.update(len(chunk))
+                    tmp.replace(dest)
+                return True
+            except Exception as e:
+                if attempt == max_retries: return False
+                time.sleep(2 * attempt)
+
+    for url, dest in targets:
+        print(f"-> Downloading (Always) {dest.name}...")
+        download_with_progress(url, dest)
+
+    gz_list = list(uniprot_root.glob("*.gz"))
+    for gz_path in gz_list:
+        dest_path = gz_path.with_suffix("")
+        print(f"-> Extracting (Always) {gz_path.name}...")
+        with gzip.open(gz_path, "rb") as f_in, open(dest_path, "wb") as f_out:
+            shutil.copyfileobj(f_in, f_out)
+
+    def parse_uniprot_sprot_func(uniprot_path: Path) -> pd.DataFrame:
+        def _push_current(rec_list: List[Dict], cur: Dict):
+            if not cur: return
+            cur["Description"] = " ".join(cur.get("Description", [])).strip() or None
+            cur["Organism"] = " ".join(cur.get("Organism", [])).strip().rstrip(".") or None
+            if "Organism_ID" in cur:
+                m_id = re.search(r"NCBI_TaxID=(\d+)", cur["Organism_ID"])
+                cur["Organism_ID"] = m_id.group(1) if m_id else None
+            else: cur["Organism_ID"] = None
+            if "PDB" in cur:
+                seen, uniq = set(), []
+                for x in cur["PDB"]:
+                    x_up = x.strip().upper()
+                    if re.fullmatch(r"[0-9A-Z]{4}", x_up) and x_up not in seen:
+                        seen.add(x_up); uniq.append(x_up)
+                cur["PDB"] = ", ".join(uniq) if uniq else None
+            else: cur["PDB"] = None
+            cur["amino_acid_sequence"] = cur.get("amino_acid_sequence", None) or None
+            cur["IDR_regions"] = cur.get("IDR_regions", [])
+            acc = cur.get("Accession")
+            if isinstance(acc, list): cur["Accession"] = acc[0] if acc else None
+            rec_list.append({"ID": cur.get("ID"), "Accession": cur.get("Accession"), "Description": cur.get("Description"), "Organism": cur.get("Organism"), "Organism_ID": cur.get("Organism_ID"), "amino_acid_sequence": cur.get("amino_acid_sequence"), "IDR_regions": cur.get("IDR_regions"), "PDB": cur.get("PDB")})
+
+        re_id = re.compile(r"^ID\s+(\S+)"); re_ac = re.compile(r"^AC\s+(.+)"); re_de = re.compile(r"^DE\s+(.+)"); re_os = re.compile(r"^OS\s+(.+)")
+        re_ox = re.compile(r"^OX\s+(.+)"); re_dr_pdb = re.compile(r"^DR\s+PDB;\s*([0-9A-Za-z]{4});"); re_ft_region = re.compile(r"^FT\s+REGION\s+(\d+)\.\.(\d+)\s+(.*)$", re.IGNORECASE)
+
+        with open(uniprot_path, "r", encoding="utf-8", errors="ignore") as f: lines = f.readlines()
+        records, cur, in_seq = [], {}, False
+        for line in tqdm(lines, desc="Parsing UniProt", unit="line", dynamic_ncols=True):
+            line = line.rstrip("\n")
+            if line.startswith("//"): _push_current(records, cur); cur, in_seq = {}, False; continue
+            if line.startswith("SQ "): in_seq, cur["amino_acid_sequence"] = True, ""; continue
+            if in_seq:
+                if line.startswith("  "): cur["amino_acid_sequence"] += re.sub(r"[^A-Za-z]", "", line); continue
+                else: in_seq = False
+            m = re_id.match(line)
+            if m: cur["ID"] = m.group(1).strip(); continue
+            m = re_ac.match(line)
+            if m:
+                parts = [p.strip() for p in m.group(1).strip().split(";") if p.strip()]
+                if parts: cur.setdefault("Accession", []).extend(parts)
+                continue
+            m = re_de.match(line)
+            if m: cur.setdefault("Description", []).append(m.group(1).strip()); continue
+            m = re_os.match(line)
+            if m: cur.setdefault("Organism", []).append(m.group(1).strip()); continue
+            m = re_ox.match(line)
+            if m: cur["Organism_ID"] = m.group(1).strip(); continue
+            m = re_dr_pdb.match(line)
+            if m: cur.setdefault("PDB", []).append(m.group(1).upper()); continue
+            m = re_ft_region.match(line)
+            if m:
+                start, end, desc = m.groups()
+                if "disordered" in desc.lower():
+                    try: cur.setdefault("IDR_regions", []).append((int(start), int(end)))
+                    except: pass
+                continue
+        if cur: _push_current(records, cur)
+        return pd.DataFrame.from_records(records, columns=["ID", "Accession", "Description", "Organism", "Organism_ID", "amino_acid_sequence", "IDR_regions", "PDB"])
+
+    uniprot_dat_path = uniprot_root / "uniprot_sprot.dat"
+    print("[PROCESS] UniProt DAT 파싱 및 CSV 변환 중 (항상 최신화)...")
+    swiss_prot_df = parse_uniprot_sprot_func(uniprot_dat_path)
+    swiss_prot_df = swiss_prot_df.dropna(subset=["amino_acid_sequence"]).dropna()
+    swiss_prot_df.to_csv(uniprot_csv_path, index=False)
+    print("[SUCCESS] UniProt 파싱 완료")
+
+
+    # -----------------------------------------------------------------
+    # [PHASE 2] PDB DOWNLOAD & FLATTEN
+    # -----------------------------------------------------------------
+    print("\n" + "="*60)
+    print(" [PHASE 2] PDB(mmCIF) 동기화 및 Flatten")
+    print("="*60)
+
+    all_ids = set(pid.lower() for pid in requests.get(PDB_API_URL, headers={"User-Agent": "Mozilla/5.0"}, timeout=30).json())
+    local_ids = {p.stem.lower() for p in mmcif_root.rglob("*.cif") if p.stat().st_size > 0}
+    missing_ids = list(all_ids - local_ids)
+
+    print(f" - 전체 대상: {len(all_ids):,}, 로컬 보유: {len(local_ids):,}, 신규 대상: {len(missing_ids):,}")
+    if missing_ids:
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+            list(tqdm(ex.map(download_and_extract, missing_ids), total=len(missing_ids), desc="Downloading mmCIF"))
+
+    files_to_move = list(mmcif_divided_root.rglob("*.cif"))
+    if files_to_move:
+        for src in tqdm(files_to_move, desc="Flatten move", unit="file", dynamic_ncols=True):
+            dst = mmcif_root / src.name
+            if dst.exists():
+                if dst.stat().st_size == src.stat().st_size and abs(dst.stat().st_mtime - src.stat().st_mtime) < 2.0: continue
+                tmp = mmcif_root / (src.name + ".incoming")
+                if tmp.exists(): tmp.unlink()
+                shutil.move(str(src), str(tmp)); tmp.replace(dst)
+            else:
+                shutil.move(str(src), str(dst))
+
+
+    # -----------------------------------------------------------------
+    # [PHASE 3] CHAIN SPLIT & DSSP
+    # -----------------------------------------------------------------
+    print("\n" + "="*60)
+    print(" [PHASE 3] 체인 분할 및 DSSP 2차 구조 계산")
+    print("="*60)
+
+    all_mmcifs = list(mmcif_root.glob("*.cif"))
+    done_struct_ids = {p.stem.split(":", 1)[0] for p in mmcif_chain_root.glob("*.cif") if ":" in p.name and p.stat().st_size > 0}
+    queue_chains = [p for p in all_mmcifs if p.stem not in done_struct_ids]
+    if queue_chains:
+        with ProcessPoolExecutor(max_workers=MAX_WORKERS) as ex:
+            list(tqdm(ex.map(split_mmcif_by_chain, queue_chains), total=len(queue_chains), desc="Split Chains"))
+
+    done_dssp_ids = {p.stem for p in dssp_root.glob("*.dssp") if p.stat().st_size > 0}
+    queue_dssps = [p for p in all_mmcifs if p.stem not in done_dssp_ids]
+    if queue_dssps:
+        with ProcessPoolExecutor(max_workers=MAX_WORKERS) as ex:
+            list(tqdm(ex.map(run_dssp_for_mmcif, queue_dssps, chunksize=100), total=len(queue_dssps), desc="mkdssp"))
+
+
+    # -----------------------------------------------------------------
+    # [PHASE 4] FEATURE EXTRACTION
+    # -----------------------------------------------------------------
+    print("\n" + "="*60)
+    print(" [PHASE 4] Feature Extraction (PTM, Sequence, Structure)")
+    print("="*60)
+
+    if os.path.exists(inter_sequence_df_path): inter_sequence_df = pd.read_csv(inter_sequence_df_path)
+    else: inter_sequence_df = pd.DataFrame(columns=["PDB_ID", "chain_ID", "1_letter_expressed_sequence"])
+
+    if os.path.exists(inter_PTM_SD_df_path): inter_PTM_SD_df = pd.read_csv(inter_PTM_SD_df_path)
+    else: inter_PTM_SD_df = pd.DataFrame()
+
+    if os.path.exists(inter_StrucPTM_df_path): inter_StrucPTM_df = pd.read_csv(inter_StrucPTM_df_path)
+    else: inter_StrucPTM_df = pd.DataFrame()
+
+    seq_id_set = set(inter_sequence_df['PDB_ID'].dropna().astype(str).str.strip().str.lower().unique())
+    mmcifs = os.listdir(mmcif_root)
+    target_cifs = [p for p in mmcifs if os.path.splitext(p)[0].strip().lower() not in seq_id_set and p.endswith(".cif")]
+    print(f"Target structures to process: {len(target_cifs)} / {len(mmcifs)}")
+
+    if target_cifs:
+        all_seq, all_modres, all_resatoms, all_glyco = [], [], [], []
+        with ProcessPoolExecutor(max_workers=MAX_WORKERS) as ex:
+            for sq, md, ra, gl in tqdm(ex.map(extract_from_mmcif_one_pass, target_cifs), total=len(target_cifs), desc="Extract Features"):
+                all_seq.extend(sq); all_modres.extend(md); all_resatoms.extend(ra); all_glyco.extend(gl)
+
+        new_seq_df = pd.DataFrame(all_seq)
+        if not new_seq_df.empty:
+            pat = r'(^|-)(?:' + '|'.join(sorted(map(re.escape, set(AA3_TO_AA1.keys()) | set(MOD_TO_AA1.keys()) | NONRES_TOKENS))) + r')(-|$)'
+            mask = new_seq_df['sequence_3'].str.contains(pat, na=False)
+            new_seq_df.loc[mask, 'sequence_1'] = new_seq_df.loc[mask].apply(drop_tail_and_map_general, axis=1)
+            new_seq_df = new_seq_df.rename(columns={"pdb_id": "PDB_ID", "pdb_chain": "chain_ID", "sequence_1": "1_letter_expressed_sequence"})
         
-except Exception as e:
-    print("[ERROR] Error occurred, rolling back.", e)
-    conn.rollback()
-finally:
-    conn.close()
-    print("\n[FINISHED] MySQL connection closed. Pipeline Complete!")
+        new_ptm_sd = pd.DataFrame(all_modres)
+        if not new_ptm_sd.empty:
+            new_ptm_sd = new_ptm_sd.dropna(subset=["pdb_id", "pdb_chain", "pdb_pos", "pdb_modres", "pdb_modres_details"])
+            new_ptm_sd = new_ptm_sd[~((new_ptm_sd["pdb_modres"].str.upper() == "MSE") | (new_ptm_sd["pdb_modres_details"].str.upper().str.strip() == "SELENOMETHIONINE"))]
+            new_ptm_sd["pdb_pos"] = pd.to_numeric(new_ptm_sd["pdb_pos"], errors="coerce").astype("Int64")
+            new_ptm_sd = new_ptm_sd.dropna(subset=["pdb_pos"])
+            ptm_sd_table = pd.read_csv(ptm_sd_table_path)
+            mod_to_ann = dict(zip(ptm_sd_table["MODRES comment"].str.strip(), ptm_sd_table["PTM-SD annotation"].str.strip().replace({"O-linked Glycosylation": "Glycosylation"})))
+            new_ptm_sd["PTM_SD_annotation"] = new_ptm_sd["pdb_modres_details"].map(mod_to_ann).fillna("Unknown")
+
+        resatoms_df = pd.DataFrame(all_resatoms)
+        glyco_df = pd.DataFrame(all_glyco)
+        diff_df = pd.read_csv(diff_df_path)
+        map_df = pd.read_csv(pdb_chain_uniprot_csv_path, comment="#")[["PDB", "CHAIN", "SP_PRIMARY"]].dropna()
+        map_df["pdb_id_chain"] = map_df["PDB"].str.upper() + ":" + map_df["CHAIN"].str.upper()
+        chain_to_uniprot = map_df.set_index("pdb_id_chain")["SP_PRIMARY"].to_dict()
+
+        if not resatoms_df.empty:
+            resatoms_df = resatoms_df[resatoms_df["pdb_restype"].str.upper() != "MSE"].copy()
+            resatoms_df["atom_types"] = resatoms_df["atom_types"].apply(parse_atom_types)
+            ptm_to_added_atoms = {r["PTM Residue"].strip().upper(): set([a.strip().upper() for a in r["Common Added Atoms"].split(",") if a.strip()]) for _, r in diff_df.dropna(subset=["Common Added Atoms"]).iterrows()}
+            
+            resatoms_df["Updated_annotation"] = np.nan
+            valid_ptm = set(ptm_to_added_atoms.keys()) & set(PTM_rescode_to_annotation.keys()) & set(resatoms_df["pdb_restype"].unique())
+            for ptm_code in valid_ptm:
+                mask_ptm = (resatoms_df["pdb_restype"] == ptm_code)
+                ok_mask = resatoms_df.loc[mask_ptm, "atom_types"].apply(lambda xs: ptm_to_added_atoms[ptm_code].issubset(set(xs)))
+                resatoms_df.loc[resatoms_df.loc[mask_ptm].index[ok_mask], "Updated_annotation"] = PTM_rescode_to_annotation[ptm_code]
+            
+            non_gly = resatoms_df[resatoms_df["Updated_annotation"].notna()].copy()
+            non_gly["pdb_id_chain"] = non_gly["pdb_id"] + ":" + non_gly["pdb_chain"]
+            non_gly = non_gly.rename(columns={"Updated_annotation": "annotation"})[["pdb_id_chain", "pdb_pos", "pdb_restype", "annotation"]]
+            
+            out = non_gly
+            if not glyco_df.empty:
+                glyco_df["pdb_id_chain"] = glyco_df["pdb_id"] + ":" + glyco_df["pdb_chain"]
+                glyco_df["annotation"] = "Glycosylation"
+                out = pd.concat([non_gly, glyco_df[["pdb_id_chain", "pdb_pos", "pdb_restype", "annotation"]]], ignore_index=True)
+            
+            out["pdb_pos"] = pd.to_numeric(out["pdb_pos"], errors="coerce").astype("Int64")
+            out = out.dropna(subset=["pdb_pos"]).drop_duplicates()
+            out["pdb_id"] = out["pdb_id_chain"].astype(str).str[:4]
+            out["pdb_chain"] = out["pdb_id_chain"].astype(str).str[5:]
+            out["UniProt_Accession_code"] = out["pdb_id_chain"].map(chain_to_uniprot)
+            out = out.merge(swiss_prot_df[["Accession", "Organism"]].drop_duplicates(), left_on="UniProt_Accession_code", right_on="Accession", how="left").drop(columns=["Accession"])
+            out["base_residue_name"] = out["pdb_restype"].str.upper().map(lambda x: ptm_to_canonical_3code.get(x, x)).map(lambda x: THREE_TO_FULLNAME.get(x, x))
+
+            # 멀티 프로세싱 (Assembly / Interface)
+            out["Assembly_type"], out["Location"] = "Unknown", "Unknown"
+            ptm_map = {}
+            for idx, r in out.iterrows(): ptm_map.setdefault(r["pdb_id"], {}).setdefault((r["pdb_chain"], int(r["pdb_pos"])), []).append(idx)
+            
+            asm_tasks = [(pdb, list(reqs.keys()), str(mmcif_root)) for pdb, reqs in ptm_map.items()]
+            with ProcessPoolExecutor(max_workers=MAX_WORKERS) as exe:
+                for pdb, asm, locs in tqdm(exe.map(global_asm_worker, asm_tasks), total=len(asm_tasks), desc="Annotate Assembly (Fast)"):
+                    for (ch, rn), idxs in ptm_map[pdb].items():
+                        for idx in idxs: 
+                            out.at[idx, "Assembly_type"] = asm
+                            out.at[idx, "Location"] = locs.get((ch, rn), "Unknown")
+
+            # 멀티 프로세싱 (DSSP)
+            out["Secondary_structure"], out["RSA"], out["_base_aa1"], out["orig_idx"] = np.nan, np.nan, out["base_residue_name"].map(FULLNAME_TO_1), out.index
+            dssp_tasks = [(pdb, out[out["pdb_id"]==pdb][["pdb_chain", "pdb_pos", "orig_idx", "_base_aa1"]], str(dssp_root), max_ASA) for pdb in out["pdb_id"].unique()]
+            with ProcessPoolExecutor(max_workers=MAX_WORKERS) as exe:
+                updates = [r for r in tqdm(exe.map(global_dssp_worker, dssp_tasks), total=len(dssp_tasks), desc="Annotate DSSP (Fast)") if r is not None]
+                
+            if updates:
+                u = pd.concat(updates, ignore_index=True)
+                out.loc[u["orig_idx"], "Secondary_structure"] = u["sec_struct"].values
+                out.loc[u["orig_idx"], "RSA"] = u["RSA_dssp"].values
+            
+            out = out.rename(columns={"pdb_id": "PDB_ID", "pdb_chain": "chain_ID", "pdb_pos": "residue_number", "pdb_restype": "3_letter_residue_code", "annotation": "PTM_type_annotation"}).drop(columns=["_base_aa1", "orig_idx"], errors="ignore")
+            new_struc_df = out
+        else:
+            new_struc_df = pd.DataFrame()
+            
+        sequence_df = pd.concat([new_seq_df, inter_sequence_df], ignore_index=True)
+        sequence_df = sequence_df[sequence_df["1_letter_expressed_sequence"].notna() & (sequence_df["1_letter_expressed_sequence"].str.strip() != "")]
+        sequence_df = sequence_df.assign(_len=sequence_df["1_letter_expressed_sequence"].str.len()).sort_values("_len", ascending=False).drop_duplicates(["PDB_ID", "chain_ID"]).drop(columns="_len").reset_index(drop=True)
+        
+        PTM_SD_df = pd.concat([new_ptm_sd, inter_PTM_SD_df], ignore_index=True).drop_duplicates().reset_index(drop=True)
+        StrucPTM_df = pd.concat([new_struc_df, inter_StrucPTM_df], ignore_index=True).drop_duplicates().reset_index(drop=True)
+        
+    else:
+        print("[INFO] No new structures to process. Using intermediates directly.")
+        sequence_df = inter_sequence_df
+        PTM_SD_df = inter_PTM_SD_df
+        StrucPTM_df = inter_StrucPTM_df
+
+
+    # -----------------------------------------------------------------
+    # [PHASE 5] ALIGNMENT & HOMOLOG GROUPING
+    # -----------------------------------------------------------------
+    print("\n" + "="*60)
+    print(" [PHASE 5] Alignment & Homolog Grouping")
+    print("="*60)
+
+    map_df = pd.read_csv(pdb_chain_uniprot_csv_path, comment="#")[["PDB", "CHAIN", "SP_PRIMARY"]].dropna()
+    map_df["pdb_id_chain"] = map_df["PDB"].str.upper() + ":" + map_df["CHAIN"].str.upper()
+    u_dict = map_df.dropna(subset=["SP_PRIMARY"]).groupby("SP_PRIMARY")["pdb_id_chain"].apply(lambda s: sorted(set(s.astype(str)))).to_dict()
+
+    StrucPTM_df["PDB_IDs_from_identical_UniProt_Accession_code"] = StrucPTM_df["UniProt_Accession_code"].map(u_dict).apply(lambda x: ", ".join(x) if isinstance(x, list) else "")
+
+    seq_map = (sequence_df["PDB_ID"].str.upper() + ":" + sequence_df["chain_ID"].str.upper()).to_frame(name="__key__").assign(__seq__=sequence_df["1_letter_expressed_sequence"]).set_index("__key__")["__seq__"].to_dict()
+    StrucPTM_df["__key__"] = StrucPTM_df["PDB_ID"].str.upper() + ":" + StrucPTM_df["chain_ID"].str.upper()
+
+    os.makedirs("./align_df_ckpt", exist_ok=True)
+    sorted_map = pickle.load(open("./align_df_ckpt/sorted_map.pkl", "rb")) if os.path.exists("./align_df_ckpt/sorted_map.pkl") else {}
+
+    tasks = []
+    for key in tqdm(StrucPTM_df["__key__"].dropna().unique(), desc="Build Align Tasks"):
+        if key in sorted_map or not seq_map.get(key): continue
+        group = StrucPTM_df.loc[StrucPTM_df["__key__"]==key, "PDB_IDs_from_identical_UniProt_Accession_code"].iloc[0]
+        if not group: continue
+        cands = [c.strip() for c in group.split(",") if c.strip() != key and seq_map.get(c.strip())]
+        if cands: tasks.append((key, seq_map[key], [(c, seq_map[c]) for c in cands]))
+
+    if tasks:
+        with mp.Pool(MAX_WORKERS) as pool:
+            for key, res in tqdm(pool.imap_unordered(_worker_align, tasks, chunksize=1), total=len(tasks), desc="Aligning"):
+                sorted_map[key] = res
+        with open("./align_df_ckpt/sorted_map.pkl", "wb") as f: pickle.dump(sorted_map, f)
+
+    StrucPTM_df["scores_filtered"] = StrucPTM_df["__key__"].map(lambda k: ", ".join([f"{pc}|{sc:.4f}" for pc, sc in sorted_map.get(k, [])]) if k in sorted_map else "")
+    StrucPTM_df = StrucPTM_df.drop(columns=["__key__"])
+    if "RSA" in StrucPTM_df.columns:
+        StrucPTM_df["RSA"] = StrucPTM_df["RSA"].clip(upper=1.0)
+
+    # Save Files
+    sequence_df.to_csv(inter_sequence_df_path, index=False)
+    sequence_df.to_csv(sequence_df_path, index=False)
+    sequence_df.to_csv(MYSQL_SEQ_CSV, index=False)
+
+    PTM_SD_df.to_csv(inter_PTM_SD_df_path, index=False)
+    PTM_SD_df.to_csv(PTM_SD_df_path, index=False)
+
+    StrucPTM_df.to_csv(inter_StrucPTM_df_path, index=False)
+    StrucPTM_df.to_csv(StrucPTM_df_path, index=False)
+    StrucPTM_df.to_csv(MYSQL_PTM_CSV, index=False)
+
+
+    # -----------------------------------------------------------------
+    # [PHASE 6] MYSQL ZERO-DOWNTIME INSERTION
+    # -----------------------------------------------------------------
+    print("\n" + "="*60)
+    print(" [PHASE 6] MySQL Zero-Downtime Insertion")
+    print("="*60)
+
+    def norm_str(v): return None if pd.isna(v) or not str(v).strip() else str(v).strip()
+    def norm_int(v): return None if pd.isna(v) or not str(v).strip() else int(float(str(v).strip()))
+    def norm_float(v): return None if pd.isna(v) or not str(v).strip() else float(str(v).strip())
+
+    conn = pymysql.connect(host=DB_HOST, user=DB_USER, password=DB_PASS, db=DB_NAME, charset="utf8mb4", autocommit=False)
+    try:
+        with conn.cursor() as cur:
+            print("[DB] TRUNCATE TABLE sequence_data_ext ...")
+            cur.execute("TRUNCATE TABLE sequence_data_ext;")
+            sql_seq = "INSERT INTO sequence_data_ext (pdb_id, chain_id, seq_aa1) VALUES (%s, %s, %s)"
+            tot = 0
+            for chunk in pd.read_csv(MYSQL_SEQ_CSV, chunksize=50000):
+                batch = [(norm_str(r.get("PDB_ID")), norm_str(r.get("chain_ID")), norm_str(r.get("1_letter_expressed_sequence"))) for _, r in chunk.iterrows() if norm_str(r.get("PDB_ID"))]
+                if batch: cur.executemany(sql_seq, batch); tot += len(batch)
+            conn.commit()
+            print(f"[SUCCESS] Sequence Inserted: {tot:,}")
+
+            print("[DB] TRUNCATE TABLE ptm_data_ext ...")
+            cur.execute("TRUNCATE TABLE ptm_data_ext;")
+            sql_ptm = "INSERT INTO ptm_data_ext (pdb_id, chain_id, uniprot_acc, organism, residue_no, res3, residue_name, ptm_type, assembly_type, location, secondary_structure, rsa, related_pdb_chains_from_SIFTS) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+            tot = 0
+            for chunk in pd.read_csv(MYSQL_PTM_CSV, chunksize=50000):
+                batch = []
+                for _, r in chunk.iterrows():
+                    pid = norm_str(r.get("PDB_ID"))
+                    if not pid: continue
+                    batch.append((pid[:4], norm_str(r.get("chain_ID")), norm_str(r.get("UniProt_Accession_code")), norm_str(r.get("Organism")), norm_int(r.get("residue_number")), norm_str(r.get("3_letter_residue_code"))[:3] if norm_str(r.get("3_letter_residue_code")) else None, norm_str(r.get("base_residue_name")), norm_str(r.get("PTM_type_annotation")), norm_str(r.get("Assembly_type")), norm_str(r.get("Location")), norm_str(r.get("Secondary_structure"))[:1] if norm_str(r.get("Secondary_structure")) else None, norm_float(r.get("RSA")), norm_str(r.get("scores_filtered"))))
+                if batch: cur.executemany(sql_ptm, batch); tot += len(batch)
+            conn.commit()
+            print(f"[SUCCESS] PTM Inserted: {tot:,}")
+            
+    except Exception as e:
+        print("[ERROR] Error occurred, rolling back.", e)
+        conn.rollback()
+    finally:
+        conn.close()
+        print("\n[FINISHED] MySQL connection closed. Pipeline Complete!")
+
+
+if __name__ == "__main__":
+    main()
