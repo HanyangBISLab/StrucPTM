@@ -1,5 +1,5 @@
 # ==========================
-# mysql.py (FULL MODIFIED VERSION - Perfect Camera Sync)
+# mysql.py (FULL MODIFIED VERSION - Perfect Camera Sync & CIF Path Fixed)
 # ==========================
 
 import os
@@ -13,7 +13,7 @@ import pymysql
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse, Response
-from fastapi.staticfiles import StaticFiles  # static movie 제공
+from fastapi.staticfiles import StaticFiles
 
 from pydantic import BaseModel
 
@@ -43,10 +43,10 @@ app.add_middleware(
 )
 
 # ========= DB / TABLE 설정 =========
-DB_NAME = os.getenv("PTM_DB", "BIS_PTM")
-DB_HOST = os.getenv("PTM_HOST", "localhost")
-DB_USER = os.getenv("PTM_USER", "root")
-DB_PASS = os.getenv("PTM_PASS", "bis4704_29")
+DB_NAME = os.getenv("PTM_DB", "")
+DB_HOST = os.getenv("PTM_HOST", "")
+DB_USER = os.getenv("PTM_USER", "")
+DB_PASS = os.getenv("PTM_PASS", "")
 
 PTM_TABLE = os.getenv("PTM_TABLE", "ptm_data_ext")
 SEQ_TABLE = os.getenv("SEQ_TABLE", "sequence_data_ext")
@@ -153,7 +153,6 @@ def bucket_organism(raw: Optional[str]) -> str:
 
 
 def get_snapshot_date(conn) -> Optional[str]:
-    # 1. 쉘 스크립트가 만들어둔 텍스트 파일에서 날짜 읽기
     date_file = "/home/bis/230711_JSG/241125_PTM/250818_webservice/backend/snapshot_date.txt"
     if os.path.exists(date_file):
         try:
@@ -164,7 +163,6 @@ def get_snapshot_date(conn) -> Optional[str]:
         except Exception as e:
             print("Read snapshot file error:", e)
 
-    # 2. 파일이 없으면 기존 방식(DB 메타데이터)으로 시도
     try:
         with conn.cursor() as cur:
             cur.execute(
@@ -237,7 +235,7 @@ def stats_overview():
     return data
 
 
-# ========= PTM SEARCH (🚀 30,000개 하드 리미트 + 초고속 JSON 바이패스 적용) =========
+# ========= PTM SEARCH =========
 @app.post("/search_ptm_data", include_in_schema=True)
 def search_ptm_data(query: SearchQuery):
     sql = f"""
@@ -295,7 +293,6 @@ def search_ptm_data(query: SearchQuery):
         sql += " AND rsa <= %s"
         params.append(float(query.rsa_max))
 
-    # 데이터베이스 부하 방지를 위한 하드 리미트
     sql += " LIMIT 30000"
 
     results = []
@@ -310,7 +307,6 @@ def search_ptm_data(query: SearchQuery):
                 pdb_id = row.get("pdb_id")
                 pdb_id_chain = f"{pdb_id}:{chain_id}" if chain_id else f"{pdb_id}"
                 
-                # 빈 문자열 에러 방지
                 rsa_val = row.get("rsa")
                 rsa_clean = None
                 if rsa_val not in (None, ""):
@@ -545,20 +541,26 @@ def needleman_wunsch(a, b, match=1, mismatch=-1, gap=-1):
 
 
 # ========= CIF FILES =========
-MMCIF_DIR = os.getenv("MMCIF_DIR", "/var/lib/mysql-files/mmcifs")
+# 💡 [경로 수정 완료] 실제 데이터가 쌓이는 원본 폴더로 직접 연결!
+MMCIF_DIR = "/data1/JSG/mmcifs"
+MMCIF_CHAIN_DIR = "/data1/JSG/mmcif_chains"
 
 def resolve_mmcif_path(pdb_id: str, chain: str | None = None) -> str:
-    pid = pdb_id.strip().lower()
+    pid = pdb_id.strip().lower()  # 리눅스 파일 찾기 위해 PDB ID를 무조건 소문자로 변환
     if not PDB_RE.match(pid):
         raise HTTPException(status_code=400, detail="Invalid pdb_id")
+        
     if chain:
-        ch = chain.strip().upper()
+        ch = chain.strip().upper()  # 체인 ID는 대문자로 유지
         if not CHAIN_RE.match(ch):
             raise HTTPException(status_code=400, detail="Invalid chain")
-        chain_path = os.path.join(MMCIF_DIR, f"{pid}:{ch}.cif")
+            
+        # 1. 체인별 분할 폴더에서 먼저 찾기 (예: 9r9j:A.cif)
+        chain_path = os.path.join(MMCIF_CHAIN_DIR, f"{pid}:{ch}.cif")
         if os.path.exists(chain_path):
             return chain_path
 
+    # 2. 체인 파일이 없거나 체인 파라미터가 없으면 전체 구조 폴더에서 찾기 (예: 9r9j.cif)
     path = os.path.join(MMCIF_DIR, f"{pid}.cif")
     if os.path.exists(path):
         return path
@@ -634,7 +636,7 @@ def viewer_3dmol(pdb: str, chain: str | None = None):
     pdb_upper = pdb.strip().upper()
     chain_up = (chain or "").strip().upper() or ""
     chain_q = f"&chain={chain_up}" if chain_up else ""
-    cif_url = f"/cif/{pdb_lower}?nocache=1{chain_q}"
+    cif_url = f"/strucptm/api/cif/{pdb_lower}?nocache=1{chain_q}"  # 💡 URL 경로도 API 주소 체계에 맞게 수정!
 
     ptm_sites = fetch_ptm_for_viewer(pdb_upper, chain_up or None)
     ptm_json = json.dumps(ptm_sites, ensure_ascii=False)
