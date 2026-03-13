@@ -66,24 +66,16 @@ from tqdm import tqdm
 # Biopython
 try:
     from Bio.PDB.MMCIFParser import MMCIFParser
-except Exception:
-    MMCIFParser = None
-try:
     from Bio.PDB.FastMMCIFParser import FastMMCIFParser
-except Exception:
-    FastMMCIFParser = None
-try:
     from Bio.PDB.MMCIF2Dict import MMCIF2Dict
-except Exception:
-    MMCIF2Dict = None
-try:
     from Bio.PDB.PDBIO import PDBIO
     from Bio.PDB import Select
-except Exception as e:
-    raise RuntimeError("Biopython이 필요합니다. `pip install biopython`") from e
+except Exception:
+    pass
 
 try:
-    from Bio import pairwise2
+    # 💡 [핵심 변경] 구형 pairwise2 대신 최신 고성능 C엔진 PairwiseAligner 임포트
+    from Bio import Align
     BIO_OK = True
 except Exception:
     BIO_OK = False
@@ -188,8 +180,70 @@ UNKNOWN_CHAR = 'X'
 
 # =====================================================================
 # [FUNCTIONS] 멀티 프로세싱을 위한 최상단 함수 정의 모음 
-# (에러를 방지하기 위해 main 안의 모든 함수를 밖으로 빼냈습니다)
 # =====================================================================
+# 💡 [핵심 추가] 거대 단백질 연산 동시 실행 제한용 전역 세마포어
+giant_sema = None
+
+def pool_init(sema):
+    global giant_sema
+    giant_sema = sema
+
+def count_identities(aln, qseq, cseq):
+    matches = 0
+    for (t_start, t_end), (q_start, q_end) in zip(aln.aligned[0], aln.aligned[1]):
+        for i in range(t_end - t_start):
+            if qseq[t_start + i] == cseq[q_start + i]:
+                matches += 1
+    return matches
+
+def _worker_align(task):
+    key, qseq, cand_pairs, cand_str = task
+    res = []
+    l_q = len(qseq)
+    
+    # 3000개가 넘는 서열이 하나라도 있으면 거대 단백질로 판정
+    is_giant = l_q > 3000 or any((cs and len(cs) > 3000) for ck, cs in cand_pairs)
+    
+    # OOM 방어: 거대 단백질은 동시에 2개 코어만 접근하도록 제한
+    if is_giant and giant_sema is not None:
+        giant_sema.acquire()
+        
+    try:
+        if BIO_OK:
+            aligner = Align.PairwiseAligner()
+            aligner.mode = 'global'
+            aligner.match_score = 1.0
+            aligner.mismatch_score = -1.0
+            aligner.open_gap_score = -5.0
+            aligner.extend_gap_score = -1.0
+
+        for ck, cs in cand_pairs:
+            if not cs: continue
+            l_c = len(cs)
+            
+            # 수학적 스킵 방어 (계산 생략을 통한 OOM 원천 차단 및 고속화)
+            if min(l_q, l_c) / max(l_q, l_c) < 0.8:
+                continue
+                
+            try:
+                if not BIO_OK:
+                    sc = sum(1 for i in range(min(l_q, l_c)) if qseq[i]==cs[i]) / max(l_q, l_c)
+                else:
+                    # 신형 C-엔진 PairwiseAligner 사용 (메모리 O(N*M) 최적화)
+                    best_aln = aligner.align(qseq, cs)[0]
+                    matches = count_identities(best_aln, qseq, cs)
+                    sc = matches / max(l_q, l_c)
+                
+                if sc >= 0.8:
+                    res.append((ck, sc))
+            except Exception:
+                pass # 에러 시 해당 쌍만 스킵
+    finally:
+        if is_giant and giant_sema is not None:
+            giant_sema.release()
+            
+    return key, sorted(res, key=lambda x: x[1], reverse=True), cand_str
+
 def download_with_progress(url: str, dest: Path, chunk_size=1024*1024, max_retries=5):
     for attempt in range(1, max_retries+1):
         try:
@@ -304,7 +358,10 @@ def split_mmcif_by_chain_wrapper(file_path: Path):
     structure_id = file_path.stem
     if list(mmcif_chain_root.glob(f"{structure_id}:*.cif")): return
     try:
-        parser = FastMMCIFParser(QUIET=True) if 'FastMMCIFParser' in globals() and FastMMCIFParser else MMCIFParser(QUIET=True)
+        if FastMMCIFParser:
+            parser = FastMMCIFParser(QUIET=True)
+        else:
+            parser = MMCIFParser(QUIET=True)
         st = parser.get_structure(structure_id, str(file_path))
         first_model = next(iter(st), None)
         if not first_model: return
@@ -350,7 +407,10 @@ def global_asm_worker(args):
     pdb, ptm_reqs, mmcif_dir = args
     path = os.path.join(mmcif_dir, pdb.lower() + ".cif")
     try:
-        parser = FastMMCIFParser(QUIET=True) if 'FastMMCIFParser' in globals() and FastMMCIFParser else MMCIFParser(QUIET=True)
+        if FastMMCIFParser:
+            parser = FastMMCIFParser(QUIET=True)
+        else:
+            parser = MMCIFParser(QUIET=True)
         model = next(parser.get_structure(pdb, path).get_models())
     except Exception:
         return pdb, "Unknown", {}
@@ -403,7 +463,10 @@ def extract_from_mmcif_one_pass(mmcif_file: str):
     pdb_id = mmcif_file[:4].upper()
     try:
         cif_dict = MMCIF2Dict(pdb_path)
-        parser = FastMMCIFParser(QUIET=True) if FastMMCIFParser else MMCIFParser(QUIET=True)
+        if FastMMCIFParser:
+            parser = FastMMCIFParser(QUIET=True)
+        else:
+            parser = MMCIFParser(QUIET=True)
         structure = parser.get_structure(pdb_id, pdb_path)
 
         has_modres_comp = "_pdbx_struct_mod_residue.label_comp_id" in cif_dict
@@ -497,35 +560,6 @@ def parse_atom_types(x):
     except: pass
     return [tok.strip().strip("'").strip('"').upper() for tok in str(x).strip("[]").split(",") if tok.strip()]
 
-def _worker_align(task):
-    key, qseq, cand_pairs, cand_str = task
-    res = []
-    
-    # 초거대 단백질(5000 이상) 스킵 방어코드
-    if len(qseq) > 5000:
-        return key, [], cand_str
-
-    for ck, cs in cand_pairs:
-        if not cs: continue
-        if len(cs) > 5000: continue
-            
-        if not BIO_OK:
-            sc = sum(1 for i in range(min(len(qseq), len(cs))) if qseq[i]==cs[i])/max(len(qseq),len(cs))
-        else:
-            try:
-                aln = pairwise2.align.globalms(qseq, cs, 1, -1, -5, -1, one_alignment_only=True)
-                if aln:
-                    a, b = aln[0][:2]
-                    sc = sum(1 for i in range(len(a)) if a[i]==b[i] and a[i]!="-")/len(a)
-                else: 
-                    sc = 0.0
-            except MemoryError:
-                sc = 0.0
-        
-        res.append((ck, sc))
-            
-    return key, sorted(res, key=lambda x: x[1], reverse=True), cand_str
-
 def norm_str(v): return None if pd.isna(v) or not str(v).strip() else str(v).strip()
 def norm_int(v): return None if pd.isna(v) or not str(v).strip() else int(float(str(v).strip()))
 def norm_float(v): return None if pd.isna(v) or not str(v).strip() else float(str(v).strip())
@@ -538,6 +572,9 @@ def main():
     for path in [uniprot_root, mmcif_root, mmcif_chain_root, dssp_root, uniprot_csv_path.parent, Path(inter_sequence_df_path).parent]:
         path.mkdir(parents=True, exist_ok=True)
 
+    # -----------------------------------------------------------------
+    # [PRE-CHECK] 웹 서비스용 업데이트 날짜 즉시 기록
+    # -----------------------------------------------------------------
     try:
         date_file = "/home/bis/230711_JSG/241125_PTM/250818_webservice/backend/snapshot_date.txt"
         os.makedirs(os.path.dirname(date_file), exist_ok=True)
@@ -548,6 +585,9 @@ def main():
     except Exception as e:
         print(f"\n[ERROR] 날짜 기록 중 오류 발생: {e}")
 
+    # -----------------------------------------------------------------
+    # [PHASE 1] UNIPROT & SIFTS PREP
+    # -----------------------------------------------------------------
     print("\n" + "="*60)
     print(" [PHASE 1] UniProt & SIFTS 데이터 준비 (항상 최신화)")
     print("="*60)
@@ -577,6 +617,9 @@ def main():
     print("[SUCCESS] UniProt 파싱 완료")
 
 
+    # -----------------------------------------------------------------
+    # [PHASE 2] PDB DOWNLOAD & FLATTEN
+    # -----------------------------------------------------------------
     print("\n" + "="*60)
     print(" [PHASE 2] PDB(mmCIF) 동기화 및 Flatten")
     print("="*60)
@@ -603,6 +646,9 @@ def main():
                 shutil.move(str(src), str(dst))
 
 
+    # -----------------------------------------------------------------
+    # [PHASE 3] CHAIN SPLIT & DSSP
+    # -----------------------------------------------------------------
     print("\n" + "="*60)
     print(" [PHASE 3] 체인 분할 및 DSSP 2차 구조 계산")
     print("="*60)
@@ -621,6 +667,9 @@ def main():
             list(tqdm(ex.map(run_dssp_for_mmcif_wrapper, queue_dssps, chunksize=100), total=len(queue_dssps), desc="mkdssp"))
 
 
+    # -----------------------------------------------------------------
+    # [PHASE 4] FEATURE EXTRACTION
+    # -----------------------------------------------------------------
     print("\n" + "="*60)
     print(" [PHASE 4] Feature Extraction (PTM, Sequence, Structure)")
     print("="*60)
@@ -740,6 +789,9 @@ def main():
         StrucPTM_df = inter_StrucPTM_df
 
 
+    # -----------------------------------------------------------------
+    # [PHASE 5] ALIGNMENT & HOMOLOG GROUPING
+    # -----------------------------------------------------------------
     print("\n" + "="*60)
     print(" [PHASE 5] Alignment & Homolog Grouping")
     print("="*60)
@@ -788,10 +840,14 @@ def main():
             meta_by_key[key] = cand_str
 
     if tasks:
-        with mp.Pool(MAX_WORKERS) as pool:
+        m = mp.Manager()
+        # 💡 [핵심 추가] 최대 2개의 톨게이트(Semaphore)를 생성해 메모리 폭발을 막습니다.
+        sema = m.Semaphore(2)
+        
+        with mp.Pool(MAX_WORKERS, initializer=pool_init, initargs=(sema,)) as pool:
             save_interval = 2000
             processed = 0
-            for key, res, c_str in tqdm(pool.imap_unordered(_worker_align, tasks, chunksize=1), total=len(tasks), desc="Aligning"):
+            for key, res, c_str in tqdm(pool.imap_unordered(_worker_align, tasks, chunksize=1), total=len(tasks), desc="Aligning (Safe Mode)"):
                 sorted_map[key] = res
                 done_keys.add(key)
                 meta_by_key[key] = c_str
@@ -824,6 +880,9 @@ def main():
     StrucPTM_df.to_csv(MYSQL_PTM_CSV, index=False)
 
 
+    # -----------------------------------------------------------------
+    # [PHASE 6] MYSQL ZERO-DOWNTIME INSERTION
+    # -----------------------------------------------------------------
     print("\n" + "="*60)
     print(" [PHASE 6] MySQL Zero-Downtime Insertion")
     print("="*60)
