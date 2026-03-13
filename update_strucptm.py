@@ -63,18 +63,21 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_compl
 from pathlib import Path
 from tqdm import tqdm
 
-# Biopython
+# 💡 [안전한 임포트 처리] 필수 모듈 분리
 try:
     from Bio.PDB.MMCIFParser import MMCIFParser
-    from Bio.PDB.FastMMCIFParser import FastMMCIFParser
     from Bio.PDB.MMCIF2Dict import MMCIF2Dict
     from Bio.PDB.PDBIO import PDBIO
     from Bio.PDB import Select
-except Exception:
-    pass
+except Exception as e:
+    raise RuntimeError(f"Biopython 필수 모듈을 불러올 수 없습니다: {e}")
 
 try:
-    # 💡 [핵심 변경] 구형 pairwise2 대신 최신 고성능 C엔진 PairwiseAligner 임포트
+    from Bio.PDB.FastMMCIFParser import FastMMCIFParser
+except Exception:
+    FastMMCIFParser = None
+
+try:
     from Bio import Align
     BIO_OK = True
 except Exception:
@@ -181,7 +184,6 @@ UNKNOWN_CHAR = 'X'
 # =====================================================================
 # [FUNCTIONS] 멀티 프로세싱을 위한 최상단 함수 정의 모음 
 # =====================================================================
-# 💡 [핵심 추가] 거대 단백질 연산 동시 실행 제한용 전역 세마포어
 giant_sema = None
 
 def pool_init(sema):
@@ -201,10 +203,8 @@ def _worker_align(task):
     res = []
     l_q = len(qseq)
     
-    # 3000개가 넘는 서열이 하나라도 있으면 거대 단백질로 판정
     is_giant = l_q > 3000 or any((cs and len(cs) > 3000) for ck, cs in cand_pairs)
     
-    # OOM 방어: 거대 단백질은 동시에 2개 코어만 접근하도록 제한
     if is_giant and giant_sema is not None:
         giant_sema.acquire()
         
@@ -221,7 +221,6 @@ def _worker_align(task):
             if not cs: continue
             l_c = len(cs)
             
-            # 수학적 스킵 방어 (계산 생략을 통한 OOM 원천 차단 및 고속화)
             if min(l_q, l_c) / max(l_q, l_c) < 0.8:
                 continue
                 
@@ -229,7 +228,6 @@ def _worker_align(task):
                 if not BIO_OK:
                     sc = sum(1 for i in range(min(l_q, l_c)) if qseq[i]==cs[i]) / max(l_q, l_c)
                 else:
-                    # 신형 C-엔진 PairwiseAligner 사용 (메모리 O(N*M) 최적화)
                     best_aln = aligner.align(qseq, cs)[0]
                     matches = count_identities(best_aln, qseq, cs)
                     sc = matches / max(l_q, l_c)
@@ -237,7 +235,7 @@ def _worker_align(task):
                 if sc >= 0.8:
                     res.append((ck, sc))
             except Exception:
-                pass # 에러 시 해당 쌍만 스킵
+                pass 
     finally:
         if is_giant and giant_sema is not None:
             giant_sema.release()
@@ -349,10 +347,6 @@ def download_and_extract(pdb_id: str):
             try: p.unlink()
             except: pass
     return (pdb_id, False, last_err)
-
-class ChainSelect(Select):
-    def __init__(self, chain_id: str): super().__init__(); self.chain_id = str(chain_id)
-    def accept_chain(self, chain): return str(chain.id) == self.chain_id
 
 def split_mmcif_by_chain_wrapper(file_path: Path):
     structure_id = file_path.stem
@@ -841,7 +835,6 @@ def main():
 
     if tasks:
         m = mp.Manager()
-        # 💡 [핵심 추가] 최대 2개의 톨게이트(Semaphore)를 생성해 메모리 폭발을 막습니다.
         sema = m.Semaphore(2)
         
         with mp.Pool(MAX_WORKERS, initializer=pool_init, initargs=(sema,)) as pool:
@@ -920,7 +913,6 @@ def main():
     finally:
         conn.close()
         print("\n[FINISHED] MySQL connection closed. Pipeline Complete!")
-
 
 if __name__ == "__main__":
     main()
