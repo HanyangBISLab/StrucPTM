@@ -221,7 +221,6 @@ def _worker_align(task):
             if not cs: continue
             l_c = len(cs)
             
-            # 여기서 길이 비율 사전 필터링 기준도 0.75로 변경
             if min(l_q, l_c) / max(l_q, l_c) < 0.75:
                 continue
                 
@@ -233,7 +232,6 @@ def _worker_align(task):
                     matches = count_identities(best_aln, qseq, cs)
                     sc = matches / max(l_q, l_c)
                 
-                # 여기서 최종 점수 기준도 0.75로 변경
                 if sc >= 0.75:
                     res.append((ck, sc))
             except Exception:
@@ -603,7 +601,7 @@ def main():
         dest_path = gz_path.with_suffix("")
         print(f"-> Extracting (Always) {gz_path.name}...")
         with gzip.open(gz_path, "rb") as f_in, open(dest_path, "wb") as f_out:
-            shril.copyfileobj(f_in, f_out)
+            shutil.copyfileobj(f_in, f_out)
 
     uniprot_dat_path = uniprot_root / "uniprot_sprot.dat"
     print("[PROCESS] UniProt DAT 파싱 및 CSV 변환 중 (항상 최신화)...")
@@ -857,7 +855,6 @@ def main():
         with open("./align_df_ckpt/done_keys.pkl", "wb") as f: pickle.dump(done_keys, f)
         with open("./align_df_ckpt/meta_by_key.pkl", "wb") as f: pickle.dump(meta_by_key, f)
 
-    # 여기서 결과 필터링 기준도 0.75로 변경
     StrucPTM_df["scores_filtered"] = StrucPTM_df["__key__"].map(lambda k: ", ".join([f"{pc}|{sc:.4f}" for pc, sc in sorted_map.get(k, []) if sc >= 0.75]) if k in sorted_map else "")
     StrucPTM_df = StrucPTM_df.drop(columns=["__key__"])
     if "RSA" in StrucPTM_df.columns:
