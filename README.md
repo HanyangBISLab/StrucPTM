@@ -1,6 +1,6 @@
 # StrucPTM: A Database of Structurally Validated Protein Modifications
 [![Paper DOI](https://img.shields.io/badge/Paper_DOI-10.1093%2Fbioinformatics%2Fbtag190-blue.svg)](https://doi.org/10.1093/bioinformatics/btag190)
-[![Zenodo DOI](https://img.shields.io/badge/Zenodo_DOI-10.5281%2Fzenodo.18939125-gray.svg)](https://doi.org/10.5281/zenodo.18939125)
+[![Zenodo DOI](https://img.shields.io/badge/Zenodo_DOI-10.5281%2Fzenodo.18939125-blue.svg)](https://doi.org/10.5281/zenodo.18939125)
 
 **StrucPTM** is a comprehensive structural database that systematically extracts and contextualizes post-translational modification (PTM) sites within experimentally determined protein structures. By directly validating PTMs from PDB mmCIF files using atom-level composition rules and comparing homologous structures, StrucPTM provides a critical foundation for analyzing PTM-induced conformational variations.
 
