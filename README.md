@@ -1,9 +1,18 @@
 # StrucPTM: A Database of Structurally Validated Protein Modifications
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18939125.svg)](https://doi.org/10.5281/zenodo.18939125)
+[![Paper DOI](https://img.shields.io/badge/Paper_DOI-10.1093%2Fbioinformatics%2Fbtag190-blue.svg)](https://doi.org/10.1093/bioinformatics/btag190)
+[![Zenodo DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18939125.svg)](https://doi.org/10.5281/zenodo.18939125)
 
 **StrucPTM** is a comprehensive structural database that systematically extracts and contextualizes post-translational modification (PTM) sites within experimentally determined protein structures. By directly validating PTMs from PDB mmCIF files using atom-level composition rules and comparing homologous structures, StrucPTM provides a critical foundation for analyzing PTM-induced conformational variations.
 
 🌐 **Web Server:** [https://prix.hanyang.ac.kr/strucptm](https://prix.hanyang.ac.kr/strucptm)
+
+## 📖 Citation
+If you use StrucPTM in your research or find this database helpful, please cite our official paper:
+
+> **StrucPTM: A Database of Structurally Validated Protein Modifications and Their Conformational Variation**  
+> Seong-gwang Jeon, Jejoong Yoo, Keehyoung Joo, Eunok Paek  
+> *Bioinformatics* (2026)  
+> DOI: [10.1093/bioinformatics/btag190](https://doi.org/10.1093/bioinformatics/btag190)
 
 ## 📌 Key Features
 * **Structure-based PTM Validation:** Extracts PTMs directly from PDB structures via atom-level composition rules.
@@ -18,7 +27,6 @@
 
 ## 📂 Repository Structure
 This repository contains the source code for the StrucPTM web interface and API server, along with the automated data update pipeline.
-
 ```text
 StrucPTM/
 ├── backend/
